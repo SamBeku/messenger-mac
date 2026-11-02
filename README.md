@@ -23,7 +23,20 @@ Needs only the Xcode Command Line Tools and macOS 14 or later.
 - You stay logged in between launches.
 - Links open in your default browser. Calls, file uploads and downloads (saved to ~/Downloads) work in the app.
 - If you're offline, it shows a retry page and reconnects automatically when the network comes back.
-- The Messenger menu has settings for notifications, sound, message previews and Open at Login.
+- Reopens the chat you had open last.
+
+## Settings (⌘,)
+
+All of these are on by default and apply instantly:
+
+- **Seamless title bar:** no gray title bar. The window buttons sit on the app, and you drag the window by the strip at the top.
+- **Frosted-glass sidebar:** the chat list uses the macOS blur effect.
+- **Custom accent color:** one color for your message bubbles, buttons and highlights, replacing every chat's theme. It defaults to your Mac's accent color.
+- **Compact chat list:** smaller rows so more chats fit.
+- **Hide filter row:** removes the All / Unread / Groups buttons.
+- **Hide "Reply?" nudges:** removes Meta's "Reply?" / "Follow up?" prompts in the chat list.
+- **Keep info panel closed:** closes the right-hand panel when you switch chats. The ⓘ button still opens it.
+- Notifications, sound, message previews and Open at Login.
 
 ## Shortcuts
 
@@ -41,6 +54,8 @@ Needs only the Xcode Command Line Tools and macOS 14 or later.
 ## Files
 
 - `Sources/main.swift`: the app itself (window, menus, notifications, downloads)
-- `Sources/bridge.js`: injected into the page to route web notifications to macOS and power the chat shortcuts
+- `Sources/SettingsView.swift`: the Settings window
+- `Sources/Appearance.swift`: turns the settings into page options, plus the title bar drag strip
+- `Sources/bridge.js`: injected into the page. It hides the rest of Facebook, holds the CSS for each look option, routes web notifications to macOS and powers the chat shortcuts
 - `Tools/make-icon.swift`: draws the app icon
 - `Info.plist`: bundle settings and camera/microphone permission text

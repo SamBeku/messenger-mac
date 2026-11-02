@@ -1,6 +1,6 @@
 import AppKit
 import Network
-import ServiceManagement
+import SwiftUI
 import UserNotifications
 import WebKit
 
@@ -51,6 +51,14 @@ enum Pref {
     static let previews = "notificationPreviews"
     static let zoom = "pageZoom"
     static let lastChat = "lastChatURL"
+    static let seamlessTitleBar = "seamlessTitleBar"
+    static let glassSidebar = "glassSidebar"
+    static let accentEnabled = "accentEnabled"
+    static let accentColor = "accentColor"
+    static let compactList = "compactList"
+    static let hideFilters = "hideFilters"
+    static let hideNudges = "hideNudges"
+    static let closeInfoPanel = "closeInfoPanel"
 }
 
 // MARK: - App
@@ -60,6 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private var window: NSWindow!
     private var webView: WKWebView!
+    private let effectView = NSVisualEffectView()
+    private let dragStrip = TitlebarDragView()
+    private var settingsWindow: NSWindow?
+    private var bridgeSource = ""
+    private var appliedAppearance: AppearanceSettings?
     private var popups: [PopupWindow] = []
     private var titleObservation: NSKeyValueObservation?
     private var urlObservation: NSKeyValueObservation?
@@ -75,10 +88,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func applicationDidFinishLaunching(_ notification: Notification) {
         defaults.register(defaults: [
             Pref.notifications: true, Pref.sound: true, Pref.previews: true, Pref.zoom: 1.0,
+            Pref.seamlessTitleBar: true, Pref.glassSidebar: true, Pref.accentEnabled: true,
+            Pref.compactList: true, Pref.hideFilters: true, Pref.hideNudges: true, Pref.closeInfoPanel: true,
         ])
         NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.mainMenu = buildMainMenu()
         buildWindow()
+        applyAppearance()
+        for name in [UserDefaults.didChangeNotification, NSColor.systemColorsDidChangeNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.applyAppearance() }
+            }
+        }
 
         notifications.onClick = { [weak self] id in self?.notificationClicked(id) }
         notifications.isWindowOnScreen = { [weak self] in
@@ -110,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func applicationDidBecomeActive(_ notification: Notification) {
         // Cmd-Tabbing back after Cmd-W should bring the window back, like clicking the Dock icon.
-        if !window.isVisible && !popups.contains(where: { $0.window.isVisible }) {
+        if !window.isVisible && settingsWindow?.isVisible != true && !popups.contains(where: { $0.window.isVisible }) {
             showMainWindow()
         }
     }
@@ -125,12 +146,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // Never throttle or suspend the page when the window is hidden or in the background.
         config.preferences.inactiveSchedulingPolicy = .none
 
-        let controller = config.userContentController
-        controller.add(self, name: "native")
-        if let url = Bundle.main.url(forResource: "bridge", withExtension: "js"),
-           let source = try? String(contentsOf: url, encoding: .utf8) {
-            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        }
+        // The page script is installed by applyAppearance(), together with the current settings.
+        config.userContentController.add(self, name: "native")
+        bridgeSource = Bundle.main.url(forResource: "bridge", withExtension: "js")
+            .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -150,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.tabbingMode = .disallowed
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.delegate = self
-        window.contentView = webView
+        window.contentView = makeContentView()
         window.center()
         window.setFrameAutosaveName("MainWindow")
 
@@ -160,6 +179,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         urlObservation = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
             MainActor.assumeIsolated { self?.urlDidChange(webView.url) }
         }
+    }
+
+    /// Layers, back to front: the frosted glass, the page, and the title bar drag strip.
+    private func makeContentView() -> NSView {
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 1100, height: 760))
+        effectView.material = .sidebar
+        effectView.blendingMode = .behindWindow
+        effectView.state = .followsWindowActiveState
+        for view in [effectView, webView!] as [NSView] {
+            view.frame = content.bounds
+            view.autoresizingMask = [.width, .height]
+            content.addSubview(view)
+        }
+        dragStrip.frame = NSRect(x: 0, y: content.bounds.height - TitlebarDragView.height,
+                                 width: content.bounds.width, height: TitlebarDragView.height)
+        dragStrip.autoresizingMask = [.width, .minYMargin]
+        content.addSubview(dragStrip)
+        return content
+    }
+
+    /// Applies the Settings window's look options to the window and the page.
+    private func applyAppearance() {
+        let settings = AppearanceSettings(defaults)
+        guard settings != appliedAppearance else { return }
+        appliedAppearance = settings
+
+        // Seamless: the page runs under a transparent title bar and leaves a strip for the buttons.
+        if settings.seamless {
+            window.styleMask.insert(.fullSizeContentView)
+        } else {
+            window.styleMask.remove(.fullSizeContentView)
+        }
+        window.titlebarAppearsTransparent = settings.seamless
+        window.titleVisibility = settings.seamless ? .hidden : .visible
+        dragStrip.isHidden = !settings.seamless
+        effectView.isHidden = !settings.glass
+
+        // Future page loads get the settings at document start; the current page updates live.
+        let controller = webView.configuration.userContentController
+        controller.removeAllUserScripts()
+        for source in ["window.__mdeskSettings = \(settings.pageSettingsJSON);", bridgeSource] {
+            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
+        webView.callAsyncJavaScript(
+            "window.__mdesk?.applySettings(settings)", arguments: ["settings": settings.pageSettings],
+            in: nil, in: .page, completionHandler: nil)
+    }
+
+    @objc func showSettings(_ sender: Any?) {
+        if settingsWindow == nil {
+            let settings = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
+            settings.title = "Settings"
+            settings.styleMask = [.titled, .closable]
+            settings.isReleasedWhenClosed = false
+            settings.center()
+            settingsWindow = settings
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
     }
 
     private func safariVersion() -> String {
@@ -261,6 +339,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         switch type {
         case "notify": postNotification(body)
         case "retry": loadHome()
+        case "theme":
+            // Match the window (title bar, glass) to Facebook's own light/dark setting.
+            window.appearance = NSAppearance(named: (body["dark"] as? Bool) == true ? .darkAqua : .aqua)
         case "openExternal":
             if let url = (body["url"] as? String).flatMap({ URL(string: $0) }), ["http", "https"].contains(url.scheme ?? "") {
                 NSWorkspace.shared.open(unwrapLinkShim(url))
@@ -535,35 +616,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc func previousChat(_ sender: Any?) { runJS("window.__mdesk?.step(-1)") }
     @objc func jumpToChat(_ sender: NSMenuItem) { runJS("window.__mdesk?.go(\(sender.tag - 1))") }
 
-    @objc func toggleNotifications(_ sender: Any?) { toggle(Pref.notifications) }
-    @objc func toggleSound(_ sender: Any?) { toggle(Pref.sound) }
-    @objc func togglePreviews(_ sender: Any?) { toggle(Pref.previews) }
-
-    private func toggle(_ key: String) {
-        defaults.set(!defaults.bool(forKey: key), forKey: key)
-    }
-
-    @objc func toggleOpenAtLogin(_ sender: Any?) {
-        let service = SMAppService.mainApp
-        do {
-            if service.status == .enabled { try service.unregister() } else { try service.register() }
-        } catch {
-            _ = NSAlert(error: error).runModal()
-        }
-    }
-
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
-        case #selector(toggleNotifications(_:)):
-            item.state = defaults.bool(forKey: Pref.notifications) ? .on : .off
-        case #selector(toggleSound(_:)):
-            item.state = defaults.bool(forKey: Pref.sound) ? .on : .off
-            return defaults.bool(forKey: Pref.notifications)
-        case #selector(togglePreviews(_:)):
-            item.state = defaults.bool(forKey: Pref.previews) ? .on : .off
-            return defaults.bool(forKey: Pref.notifications)
-        case #selector(toggleOpenAtLogin(_:)):
-            item.state = SMAppService.mainApp.status == .enabled ? .on : .off
         case #selector(navigateBack(_:)):
             return activeWebView.canGoBack
         case #selector(navigateForward(_:)):
@@ -582,10 +636,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let app = submenu(in: main, "Messenger")
         app.addItem(withTitle: "About Messenger", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         app.addItem(.separator())
-        item(app, "Show Notifications", #selector(toggleNotifications(_:)))
-        item(app, "Notification Sound", #selector(toggleSound(_:)))
-        item(app, "Show Message Previews", #selector(togglePreviews(_:)))
-        item(app, "Open at Login", #selector(toggleOpenAtLogin(_:)))
+        item(app, "Settings…", #selector(showSettings(_:)), ",")
         app.addItem(.separator())
         app.addItem(withTitle: "Hide Messenger", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         app.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
