@@ -23,7 +23,7 @@ echo "→ Compiling"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -swift-version 5 -target "$ARCH-apple-macos14.0" \
-  Sources/main.swift -o "$APP/Contents/MacOS/Messenger"
+  Sources/*.swift -o "$APP/Contents/MacOS/Messenger"
 cp Info.plist "$APP/Contents/Info.plist"
 cp Sources/bridge.js "$APP/Contents/Resources/bridge.js"
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
