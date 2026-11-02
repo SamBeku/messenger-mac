@@ -6,6 +6,48 @@
     try { window.webkit.messageHandlers.native.postMessage(msg); } catch (_) {}
   };
 
+  // ---- Messenger only -----------------------------------------------------
+  // Logged-in users end up on facebook.com/messages. Hide Facebook's top bar
+  // there and send links to the rest of Facebook to the browser.
+
+  const isFacebookHost = (host) => /(^|\.)facebook\.com$/.test(host);
+  const isMessengerPath = (path) => /^\/(messages|groupcall|videocall)(\/|$)/.test(path);
+
+  if (isFacebookHost(location.hostname)) {
+    const style = document.createElement('style');
+    style.textContent = `
+      html[data-mdesk-messenger] [role="banner"] { display: none !important; }
+      html[data-mdesk-messenger],
+      html[data-mdesk-messenger] .__fb-light-mode,
+      html[data-mdesk-messenger] .__fb-dark-mode { --header-height: 0px !important; }
+    `;
+    document.documentElement.appendChild(style);
+
+    // Only on Messenger pages, so the login screen keeps its own layout.
+    const sync = () => document.documentElement.toggleAttribute('data-mdesk-messenger', isMessengerPath(location.pathname));
+    sync();
+    for (const method of ['pushState', 'replaceState']) {
+      const original = history[method];
+      history[method] = function (...args) {
+        const result = original.apply(this, args);
+        sync();
+        return result;
+      };
+    }
+    window.addEventListener('popstate', sync);
+
+    window.addEventListener('click', (event) => {
+      if (!isMessengerPath(location.pathname)) return;
+      const link = event.target.closest?.('a[href]');
+      if (!link) return;
+      const url = new URL(link.href, location.href);
+      if (!/^https?:$/.test(url.protocol) || !isFacebookHost(url.hostname) || isMessengerPath(url.pathname)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      native({ type: 'openExternal', url: url.href });
+    }, true);
+  }
+
   // ---- Notifications ------------------------------------------------------
 
   const prefix = Math.random().toString(36).slice(2, 8);
@@ -87,7 +129,7 @@
       const seen = new Set();
       const out = [];
       for (const a of document.querySelectorAll('a[href*="/t/"]')) {
-        if (a.closest('[role="main"]')) continue; // links inside the open thread
+        if (a.closest('[role="main"], [role="banner"]')) continue; // thread contents, hidden top bar
         const r = a.getBoundingClientRect();
         if (!r.width || !r.height) continue;
         const path = norm(a.href);
@@ -113,9 +155,10 @@
     },
 
     search() {
-      const el = document.querySelector(
+      // The hidden Facebook top bar has its own search box, so pick the visible one.
+      const el = [...document.querySelectorAll(
         'input[type="search"], input[aria-label*="Search" i], input[placeholder*="Search" i]'
-      );
+      )].find((input) => !input.closest('[role="banner"]') && input.getBoundingClientRect().width > 0);
       if (!el) return false;
       el.focus();
       el.select?.();

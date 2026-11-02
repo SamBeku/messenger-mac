@@ -4,7 +4,8 @@ import ServiceManagement
 import UserNotifications
 import WebKit
 
-let homeURL = URL(string: "https://www.messenger.com/")!
+// messenger.com sends logged-in users here anyway, so go straight to it.
+let homeURL = URL(string: "https://www.facebook.com/messages/")!
 
 /// Hosts that stay inside the app. Everything else opens in the default browser.
 let internalDomains = ["messenger.com", "facebook.com", "facebook.net", "fbcdn.net", "fbsbx.com", "meta.com"]
@@ -20,6 +21,17 @@ func isInternal(_ url: URL) -> Bool {
     case "about", "blob", "data": return true
     default: return false
     }
+}
+
+/// Whether a page belongs in the app. On facebook.com only Messenger (chats, calls)
+/// and sign-in checks qualify; the feed, profiles, Marketplace etc. go to the browser.
+func isMessengerPage(_ url: URL) -> Bool {
+    guard let host = url.host?.lowercased(), host == "facebook.com" || host.hasSuffix(".facebook.com") else {
+        return true
+    }
+    let paths = ["/messages", "/groupcall", "/videocall", "/checkpoint", "/two_step_verification",
+                 "/login", "/login.php", "/logout", "/logout.php"]
+    return paths.contains { url.path == $0 || url.path.hasPrefix($0 + "/") }
 }
 
 /// Unwraps Meta's outbound link shim (l.messenger.com/l.php?u=…) to the real destination.
@@ -38,6 +50,7 @@ enum Pref {
     static let sound = "notificationSound"
     static let previews = "notificationPreviews"
     static let zoom = "pageZoom"
+    static let lastChat = "lastChatURL"
 }
 
 // MARK: - App
@@ -49,6 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var webView: WKWebView!
     private var popups: [PopupWindow] = []
     private var titleObservation: NSKeyValueObservation?
+    private var urlObservation: NSKeyValueObservation?
+    private var lastMessengerURL: URL?
     private var downloads: [ObjectIdentifier: URL] = [:]
     private var showingErrorPage = false
     private var retryTimer: Timer?
@@ -142,6 +157,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         titleObservation = webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
             MainActor.assumeIsolated { self?.updateBadge(from: webView.title) }
         }
+        urlObservation = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
+            MainActor.assumeIsolated { self?.urlDidChange(webView.url) }
+        }
     }
 
     private func safariVersion() -> String {
@@ -157,7 +175,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private func loadHome() {
         showingErrorPage = false
         retryTimer?.invalidate()
-        webView.load(URLRequest(url: homeURL))
+        let lastChat = defaults.string(forKey: Pref.lastChat).flatMap { URL(string: $0) }
+        webView.load(URLRequest(url: lastChat ?? homeURL))
     }
 
     private func retryIfShowingError() {
@@ -172,6 +191,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             NSApp.dockTile.badgeLabel = nil
         }
         // Other titles ("Alex sent a message") are transient, so keep the current badge.
+    }
+
+    private func isLoggedIn() async -> Bool {
+        let cookies = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
+        return cookies.contains { $0.name == "c_user" && $0.domain.hasSuffix("facebook.com") }
+    }
+
+    /// Catches Facebook switching pages without a full load (e.g. a profile button) and
+    /// sends that page to the browser, keeping the app on Messenger.
+    private func urlDidChange(_ url: URL?) {
+        guard let url, url.scheme?.hasPrefix("http") == true else { return }
+        if isMessengerPage(url) {
+            lastMessengerURL = url
+            if url.path.hasPrefix("/messages/") && url.path.contains("/t/") {
+                defaults.set(url.absoluteString, forKey: Pref.lastChat) // reopened on next launch
+            }
+            return
+        }
+        Task {
+            // Logged out, Facebook's own pages are the sign-in flow, so leave them alone.
+            guard await isLoggedIn(), webView.url == url else { return }
+            if url.path != "/" && url.path != "/home.php" { NSWorkspace.shared.open(url) }
+            if let back = webView.backForwardList.backItem, isMessengerPage(back.url) {
+                webView.goBack()
+            } else {
+                webView.load(URLRequest(url: lastMessengerURL ?? homeURL))
+            }
+        }
     }
 
     private var activeWebView: WKWebView {
@@ -214,6 +261,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         switch type {
         case "notify": postNotification(body)
         case "retry": loadHome()
+        case "openExternal":
+            if let url = (body["url"] as? String).flatMap({ URL(string: $0) }), ["http", "https"].contains(url.scheme ?? "") {
+                NSWorkspace.shared.open(unwrapLinkShim(url))
+            }
         default: break
         }
     }
@@ -259,6 +310,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             // A popup that was only opened to visit an outside link has nothing left to show.
             if let popup = popup(for: webView), webView.backForwardList.currentItem == nil {
                 popup.close()
+            }
+            return
+        }
+        if isMainFrame && webView === self.webView && !isMessengerPage(url) {
+            Task {
+                guard await isLoggedIn() else { return decisionHandler(.allow) }
+                decisionHandler(.cancel)
+                // The feed (e.g. after signing in) becomes Messenger; other Facebook pages go to the browser.
+                if url.path == "/" || url.path == "/home.php" {
+                    webView.load(URLRequest(url: homeURL))
+                } else {
+                    NSWorkspace.shared.open(url)
+                }
             }
             return
         }
