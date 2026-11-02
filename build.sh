@@ -27,11 +27,13 @@ swiftc -O -swift-version 5 -target "$ARCH-apple-macos14.0" \
 cp Info.plist "$APP/Contents/Info.plist"
 cp Sources/bridge.js "$APP/Contents/Resources/bridge.js"
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+xattr -cr "$APP" # Finder metadata on copied files breaks code signing
 codesign --force --sign - "$APP"
 echo "✓ Built $APP"
 
 if [ "${1:-}" = "install" ]; then
   osascript -e 'quit app "Messenger"' 2>/dev/null || true
+  while pgrep -xq Messenger; do sleep 0.2; done
   rm -rf /Applications/Messenger.app
   ditto "$APP" /Applications/Messenger.app
   echo "✓ Installed to /Applications/Messenger.app"

@@ -1,6 +1,6 @@
 # Messenger for Mac
 
-A small native macOS app (Swift + WebKit, no Electron) that runs messenger.com in its own window.
+A small native macOS app (Swift + WebKit, no Electron) that runs Facebook Messenger in its own window, without the rest of Facebook.
 This is a personal project and is not affiliated with or endorsed by Meta.
 
 ## Build
@@ -14,6 +14,7 @@ Needs only the Xcode Command Line Tools and macOS 14 or later.
 
 ## What it does
 
+- Shows only Messenger. Facebook's top bar (feed, Marketplace, notifications) is hidden, and links to the rest of Facebook open in your browser.
 - Uses Safari's engine, so it is light on memory and battery and doesn't trigger Facebook's "unsupported browser" page.
 - Closing the window (⌘W) only hides it. The app stays connected, so it reopens instantly and new messages still arrive.
 - The page is never throttled in the background, so notifications show up right away.
