@@ -27,8 +27,9 @@ swiftc -O -swift-version 5 -target "$ARCH-apple-macos14.0" \
 cp Info.plist "$APP/Contents/Info.plist"
 cp Sources/bridge.js "$APP/Contents/Resources/bridge.js"
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-xattr -cr "$APP" # Finder metadata on copied files breaks code signing
-codesign --force --sign - "$APP"
+# Finder metadata on copied files breaks code signing; it can reappear right after a copy, so retry once.
+xattr -cr "$APP"
+codesign --force --sign - "$APP" 2>/dev/null || { sleep 1; xattr -cr "$APP"; codesign --force --sign - "$APP"; }
 echo "✓ Built $APP"
 
 if [ "${1:-}" = "install" ]; then

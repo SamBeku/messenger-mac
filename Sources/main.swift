@@ -59,6 +59,8 @@ enum Pref {
     static let hideFilters = "hideFilters"
     static let hideNudges = "hideNudges"
     static let closeInfoPanel = "closeInfoPanel"
+    static let quickReactions = "quickReactions"
+    static let emojiCatalog = "emojiCatalog"
 }
 
 // MARK: - App
@@ -67,14 +69,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate {
 
     private var window: NSWindow!
-    private var webView: WKWebView!
+    private var webView: MessengerWebView!
     private let effectView = NSVisualEffectView()
     private let dragStrip = TitlebarDragView()
     private var settingsWindow: NSWindow?
+    private var customizer: (sheet: NSWindow, model: ReactionCustomizerModel)?
     private var bridgeSource = ""
     private var appliedAppearance: AppearanceSettings?
     private var popups: [PopupWindow] = []
-    private var titleObservation: NSKeyValueObservation?
+    private let dockBadge = DockBadgeView()
     private var urlObservation: NSKeyValueObservation?
     private var lastMessengerURL: URL?
     private var downloads: [ObjectIdentifier: URL] = [:]
@@ -95,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.mainMenu = buildMainMenu()
         buildWindow()
         applyAppearance()
+        dockBadge.frame = NSRect(origin: .zero, size: NSApp.dockTile.size)
+        NSApp.dockTile.contentView = dockBadge
+        NSApp.dockTile.display()
         for name in [UserDefaults.didChangeNotification, NSColor.systemColorsDidChangeNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.applyAppearance() }
@@ -151,10 +157,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         bridgeSource = Bundle.main.url(forResource: "bridge", withExtension: "js")
             .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
 
-        webView = WKWebView(frame: .zero, configuration: config)
+        webView = MessengerWebView(frame: .zero, configuration: config)
+        webView.onSwipe = { [weak self] phase, distance, start in
+            self?.webView.callAsyncJavaScript(
+                "window.__mdesk?.swipe(phase, distance, x, y)",
+                arguments: ["phase": phase, "distance": Double(distance), "x": Double(start.x), "y": Double(start.y)],
+                in: nil, in: .page, completionHandler: nil)
+        }
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.allowsBackForwardNavigationGestures = true
         webView.isInspectable = true
         webView.pageZoom = defaults.double(forKey: Pref.zoom)
         webView.setValue(false, forKey: "drawsBackground") // no white flash in dark mode
@@ -173,9 +184,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.center()
         window.setFrameAutosaveName("MainWindow")
 
-        titleObservation = webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
-            MainActor.assumeIsolated { self?.updateBadge(from: webView.title) }
-        }
         urlObservation = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
             MainActor.assumeIsolated { self?.urlDidChange(webView.url) }
         }
@@ -261,16 +269,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if showingErrorPage { loadHome() }
     }
 
-    private func updateBadge(from title: String?) {
-        let title = title ?? ""
-        if let match = title.firstMatch(of: #/^\((\d+)\)/#) {
-            NSApp.dockTile.badgeLabel = String(match.1)
-        } else if title.hasPrefix("Messenger") || title.hasPrefix("Facebook") {
-            NSApp.dockTile.badgeLabel = nil
-        }
-        // Other titles ("Alex sent a message") are transient, so keep the current badge.
-    }
-
     private func isLoggedIn() async -> Bool {
         let cookies = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
         return cookies.contains { $0.name == "c_user" && $0.domain.hasSuffix("facebook.com") }
@@ -339,6 +337,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         switch type {
         case "notify": postNotification(body)
         case "retry": loadHome()
+        case "unread": dockBadge.count = body["count"] as? Int ?? 0
+        case "swipeRegion":
+            let rect = body["rect"] as? [Double] ?? []
+            webView.swipeRegion = rect.count == 4 ? CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3]) : nil
+        case "haptic":
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        case "messageMenu": showMessageMenu(body)
+        case "confirm": showConfirmation(body)
+        case "emojiCatalog": receiveEmojiCatalog(body)
         case "theme":
             // Match the window (title bar, glass) to Facebook's own light/dark setting.
             window.appearance = NSAppearance(named: (body["dark"] as? Bool) == true ? .darkAqua : .aqua)
@@ -363,6 +370,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             thread: body["tag"] as? String ?? "",
             iconURL: showPreview ? icon : nil,
             sound: defaults.bool(forKey: Pref.sound) && (body["silent"] as? Bool) != true)
+    }
+
+    private func showMessageMenu(_ body: [String: Any]) {
+        guard let id = body["id"] as? Int else { return }
+        // The page lists Facebook's six only when the message can be reacted to.
+        let facebookReactions = body["reactions"] as? [String] ?? []
+        let reactions = facebookReactions.isEmpty ? [] : quickReactions(seed: facebookReactions)
+        let menu = MessageMenu.make(from: body, reactions: reactions) { [weak self] action, value in
+            guard let self else { return }
+            if action == "customize-reactions" { return self.showReactionCustomizer(menuId: id, reactions: reactions) }
+            self.webView.callAsyncJavaScript(
+                "window.__mdesk?.messageAction(id, action, value)",
+                arguments: ["id": id, "action": action, "value": value ?? NSNull()],
+                in: nil, in: .page, completionHandler: nil)
+        }
+        guard !menu.items.isEmpty else { return }
+        // At the pointer, like any context menu; shown once this script message has been handled.
+        let point = webView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        DispatchQueue.main.async { [weak self] in
+            guard let webView = self?.webView else { return }
+            menu.popUp(positioning: nil, at: point, in: webView)
+        }
+    }
+
+    /// The app's own quick reactions (Facebook only allows six). Until customized: the first five of
+    /// Facebook's.
+    private func quickReactions(seed: [String]) -> [String] {
+        defaults.stringArray(forKey: Pref.quickReactions)
+            ?? Array((seed.isEmpty ? ReactionCustomizerModel.defaults : seed).prefix(ReactionRowView.perLine))
+    }
+
+    private func cachedEmojiCatalog() -> [EmojiCategory]? {
+        defaults.data(forKey: Pref.emojiCatalog).flatMap { try? JSONDecoder().decode([EmojiCategory].self, from: $0) }
+    }
+
+    /// The "+" in the reaction row. The first time, the page reads Facebook's emoji catalog for it
+    /// (a few seconds, behind the scenes) while the sheet shows "Loading emoji…".
+    private func showReactionCustomizer(menuId: Int, reactions: [String]) {
+        guard customizer == nil else { return }
+        let model = ReactionCustomizerModel(reactions: reactions, catalog: cachedEmojiCatalog())
+        let view = ReactionCustomizer(model: model) { [weak self] saved in
+            guard let self, let open = self.customizer else { return }
+            if let saved { self.defaults.set(saved, forKey: Pref.quickReactions) }
+            self.window.endSheet(open.sheet)
+            self.customizer = nil
+        }
+        let sheet = NSWindow(contentViewController: NSHostingController(rootView: view))
+        customizer = (sheet, model)
+        window.beginSheet(sheet)
+        if model.catalog == nil {
+            webView.callAsyncJavaScript(
+                "window.__mdesk?.messageAction(id, 'emoji-catalog')", arguments: ["id": menuId],
+                in: nil, in: .page, completionHandler: nil)
+        }
+    }
+
+    private func receiveEmojiCatalog(_ body: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: body["categories"] ?? []),
+              let catalog = try? JSONDecoder().decode([EmojiCategory].self, from: data), !catalog.isEmpty
+        else { return }
+        defaults.set(data, forKey: Pref.emojiCatalog)
+        customizer?.model.catalog = catalog
+    }
+
+    /// Facebook's unsend / remove confirmation, asked as a native alert instead (confirmRemoval in
+    /// bridge.js): just Facebook's choices as buttons, no text. The answer goes back to the page.
+    private func showConfirmation(_ body: [String: Any]) {
+        let options = body["options"] as? [[String: String]] ?? []
+        let alert = NSAlert()
+        if options.isEmpty {
+            alert.addButton(withTitle: body["confirm"] as? String ?? "Remove").hasDestructiveAction = true
+        } else {
+            for (index, option) in options.enumerated() {
+                alert.addButton(withTitle: option["title"] ?? "").hasDestructiveAction = index == 0
+            }
+        }
+        alert.addButton(withTitle: body["cancel"] as? String ?? "Cancel").keyEquivalent = "\u{1b}"
+
+        let choices = max(options.count, 1)
+        alert.beginSheetModal(for: window) { [weak self] response in
+            let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            self?.webView.callAsyncJavaScript(
+                "window.__mdesk?.answerConfirm(choice)", arguments: ["choice": index < choices ? index : -1],
+                in: nil, in: .page, completionHandler: nil)
+        }
     }
 
     private func notificationClicked(_ id: String) {
