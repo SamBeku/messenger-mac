@@ -1,0 +1,5 @@
+# Build output (recreate it with ./build.sh)
+build/
+
+# macOS clutter
+.DS_Store

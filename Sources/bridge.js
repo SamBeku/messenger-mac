@@ -1,0 +1,134 @@
+// Injected into messenger.com at document start.
+// WKWebView has no Web Notifications, so we provide our own `Notification`
+// that forwards to the native app, plus a few helpers for keyboard shortcuts.
+(() => {
+  const native = (msg) => {
+    try { window.webkit.messageHandlers.native.postMessage(msg); } catch (_) {}
+  };
+
+  // ---- Notifications ------------------------------------------------------
+
+  const prefix = Math.random().toString(36).slice(2, 8);
+  let counter = 0;
+  const live = new Map();
+
+  class DesktopNotification extends EventTarget {
+    constructor(title, options = {}) {
+      super();
+      this.title = String(title ?? '');
+      this.body = String(options.body ?? '');
+      this.tag = String(options.tag ?? '');
+      this.icon = String(options.icon ?? options.image ?? '');
+      this.data = options.data ?? null;
+      this.silent = !!options.silent;
+      this.onclick = this.onshow = this.onclose = this.onerror = null;
+      this._id = `${prefix}-${++counter}`;
+
+      live.set(this._id, this);
+      if (live.size > 200) live.delete(live.keys().next().value);
+
+      native({
+        type: 'notify', id: this._id, title: this.title, body: this.body,
+        tag: this.tag, icon: this.icon, silent: this.silent,
+      });
+      queueMicrotask(() => this._fire('show'));
+    }
+
+    _fire(type) {
+      const ev = new Event(type, { cancelable: true });
+      const handler = this['on' + type];
+      if (typeof handler === 'function') handler.call(this, ev);
+      this.dispatchEvent(ev);
+    }
+
+    close() {
+      if (live.delete(this._id)) this._fire('close');
+    }
+
+    static get permission() { return 'granted'; }
+    static get maxActions() { return 0; }
+    static requestPermission(callback) {
+      if (typeof callback === 'function') callback('granted');
+      return Promise.resolve('granted');
+    }
+  }
+
+  Object.defineProperty(window, 'Notification', {
+    value: DesktopNotification, writable: true, configurable: true,
+  });
+
+  if (window.ServiceWorkerRegistration) {
+    ServiceWorkerRegistration.prototype.showNotification = function (title, options) {
+      new DesktopNotification(title, options);
+      return Promise.resolve();
+    };
+  }
+
+  const perms = navigator.permissions;
+  if (perms && perms.query) {
+    const query = perms.query.bind(perms);
+    perms.query = (desc) => (desc && desc.name === 'notifications')
+      ? Promise.resolve(Object.assign(new EventTarget(), { name: 'notifications', state: 'granted', onchange: null }))
+      : query(desc);
+  }
+
+  window.__mdeskNotificationClicked = (id) => {
+    const n = live.get(id);
+    if (n) n._fire('click');
+  };
+
+  // ---- Keyboard shortcut helpers -------------------------------------------
+
+  const norm = (href) => new URL(href, location.href).pathname.replace(/\/+$/, '');
+
+  window.__mdesk = {
+    // Conversation rows in the sidebar, in on-screen order.
+    chats() {
+      const seen = new Set();
+      const out = [];
+      for (const a of document.querySelectorAll('a[href*="/t/"]')) {
+        if (a.closest('[role="main"]')) continue; // links inside the open thread
+        const r = a.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const path = norm(a.href);
+        if (seen.has(path)) continue;
+        seen.add(path);
+        out.push(a);
+      }
+      return out;
+    },
+
+    go(index) {
+      const link = this.chats()[index];
+      if (link) link.click();
+    },
+
+    step(delta) {
+      const list = this.chats();
+      if (!list.length) return;
+      const current = norm(location.href);
+      let i = list.findIndex((a) => norm(a.href) === current);
+      i = i < 0 ? 0 : (i + delta + list.length) % list.length;
+      list[i].click();
+    },
+
+    search() {
+      const el = document.querySelector(
+        'input[type="search"], input[aria-label*="Search" i], input[placeholder*="Search" i]'
+      );
+      if (!el) return false;
+      el.focus();
+      el.select?.();
+      return true;
+    },
+
+    compose() {
+      const el = document.querySelector('a[href$="/new"], a[href$="/new/"], [aria-label*="New message" i]');
+      if (!el) return false;
+      el.click();
+      return true;
+    },
+
+    retry() { native({ type: 'retry' }); },
+  };
+})();
