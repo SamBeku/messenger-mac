@@ -34,17 +34,22 @@ All of these are on by default and apply instantly:
 - **Seamless title bar:** no gray title bar. The window buttons sit on the app, and you drag the window by the strip at the top.
 - **Frosted-glass sidebar:** the chat list uses the macOS blur effect.
 - **Custom accent color:** one color for your message bubbles, buttons and highlights, replacing every chat's theme. It defaults to your Mac's accent color.
+- **Messages-style chat list:** like the Messages app. The time sits at the top right, previews show up to two lines, thin lines separate chats, and the open chat is highlighted in the accent color.
 - **Compact chat list:** smaller rows so more chats fit.
 - **Hide filter row:** removes the All / Unread / Groups buttons.
 - **Hide "Reply?" nudges:** removes Meta's "Reply?" / "Follow up?" prompts in the chat list.
 - **Keep info panel closed:** closes the right-hand panel when you switch chats. The ⓘ button still opens it.
 - Notifications, sound, message previews and Open at Login.
 
+## Pinned chats
+
+Right-click a chat in the sidebar for a native menu: Pin, Mark as unread, Mute, Audio call, Video chat, Archive, Block, Delete and Leave group. Mute, Block, Delete and Leave ask with native alerts instead of Facebook's popups. Facebook's "…" button on chats is hidden. Choose **Pin** to show it as a big avatar at the top of the list, like in Messages. You can pin up to 9. A dot marks unread pinned chats, and the open one is highlighted. Drag pins to reorder them. Right-click a pin and choose **Unpin** to put it back in the list. ⌘1 – ⌘9 count pinned chats first. Pins are kept by the app, since Facebook has none.
+
 ## Messages
 
 - **Right-click a message** for a native menu laid out like Messages: your quick reactions across the top, then Reply, Edit, Forward, Copy, Pin and Unsend. Facebook's hover buttons and the time tooltip on hover are hidden.
 - **Quick reactions:** 5 by default and up to 10, shown 5 per line. **+** opens Customize Reactions, where you can search and pick from all of Facebook's emoji. The list is kept by the app (Facebook itself only allows 6). Reactions outside Facebook's own six are sent through Facebook's full emoji picker behind the scenes.
-- **Unsend / remove** asks with a native macOS alert instead of Facebook's popup.
+- **Unsend / remove** asks with a native macOS alert instead of Facebook's popup. Any Facebook popup the app can't turn into an alert still shows as Facebook's own.
 - **Esc** leaves reply mode.
 - **Apple emoji** instead of Facebook's in messages, the message box, the chat list, reactions and the emoji picker.
 

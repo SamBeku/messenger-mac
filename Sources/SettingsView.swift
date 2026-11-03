@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage(Pref.compactList) private var compactList = true
     @AppStorage(Pref.hideFilters) private var hideFilters = true
     @AppStorage(Pref.hideNudges) private var hideNudges = true
+    @AppStorage(Pref.messagesList) private var messagesList = true
     @AppStorage(Pref.closeInfoPanel) private var closeInfoPanel = true
     @AppStorage(Pref.notifications) private var notifications = true
     @AppStorage(Pref.sound) private var sound = true
@@ -36,10 +37,15 @@ struct SettingsView: View {
                 Text("Replaces Messenger's blue and every chat's theme colors.")
             }
 
-            Section("Chat list") {
+            Section {
+                Toggle("Messages-style chat list", isOn: $messagesList)
                 Toggle("Compact chat list", isOn: $compactList)
                 Toggle("Hide filter row (All / Unread / Groups)", isOn: $hideFilters)
                 Toggle("Hide “Reply?” and “Follow up?” nudges", isOn: $hideNudges)
+            } header: {
+                Text("Chat list")
+            } footer: {
+                Text("Right-click a chat to pin it to the top.")
             }
 
             Section {
@@ -61,7 +67,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 720) // a grouped Form scrolls, so it has no natural height
+        .frame(width: 440, height: 790) // a grouped Form scrolls, so it has no natural height
     }
 
     private var accentBinding: Binding<Color> {

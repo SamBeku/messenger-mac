@@ -58,6 +58,8 @@ enum Pref {
     static let compactList = "compactList"
     static let hideFilters = "hideFilters"
     static let hideNudges = "hideNudges"
+    static let messagesList = "messagesStyleChatList"
+    static let pinnedChats = "pinnedChats"
     static let closeInfoPanel = "closeInfoPanel"
     static let quickReactions = "quickReactions"
     static let emojiCatalog = "emojiCatalog"
@@ -93,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             Pref.notifications: true, Pref.sound: true, Pref.previews: true, Pref.zoom: 1.0,
             Pref.seamlessTitleBar: true, Pref.glassSidebar: true, Pref.accentEnabled: true,
             Pref.compactList: true, Pref.hideFilters: true, Pref.hideNudges: true, Pref.closeInfoPanel: true,
+            Pref.messagesList: true,
         ])
         NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.mainMenu = buildMainMenu()
@@ -182,11 +185,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.delegate = self
         window.contentView = makeContentView()
         window.center()
+        // The title bar style first: setting the style mask resizes the window, which would take the
+        // title bar's height off the restored frame on every launch.
+        applyTitleBarStyle(seamless: defaults.bool(forKey: Pref.seamlessTitleBar))
         window.setFrameAutosaveName("MainWindow")
 
         urlObservation = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
             MainActor.assumeIsolated { self?.urlDidChange(webView.url) }
         }
+    }
+
+    /// Seamless: the page runs under a transparent title bar and leaves a strip for the buttons.
+    /// The style mask is only set when it changes, since every set resizes the window.
+    private func applyTitleBarStyle(seamless: Bool) {
+        if window.styleMask.contains(.fullSizeContentView) != seamless {
+            window.styleMask.formSymmetricDifference(.fullSizeContentView)
+        }
+        window.titlebarAppearsTransparent = seamless
+        window.titleVisibility = seamless ? .hidden : .visible
+        dragStrip.isHidden = !seamless
     }
 
     /// Layers, back to front: the frosted glass, the page, and the title bar drag strip.
@@ -213,26 +230,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard settings != appliedAppearance else { return }
         appliedAppearance = settings
 
-        // Seamless: the page runs under a transparent title bar and leaves a strip for the buttons.
-        if settings.seamless {
-            window.styleMask.insert(.fullSizeContentView)
-        } else {
-            window.styleMask.remove(.fullSizeContentView)
-        }
-        window.titlebarAppearsTransparent = settings.seamless
-        window.titleVisibility = settings.seamless ? .hidden : .visible
-        dragStrip.isHidden = !settings.seamless
+        applyTitleBarStyle(seamless: settings.seamless)
         effectView.isHidden = !settings.glass
 
         // Future page loads get the settings at document start; the current page updates live.
-        let controller = webView.configuration.userContentController
-        controller.removeAllUserScripts()
-        for source in ["window.__mdeskSettings = \(settings.pageSettingsJSON);", bridgeSource] {
-            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        }
+        installPageScript()
         webView.callAsyncJavaScript(
             "window.__mdesk?.applySettings(settings)", arguments: ["settings": settings.pageSettings],
             in: nil, in: .page, completionHandler: nil)
+    }
+
+    /// The page script, preceded by what it needs from the start: the look options and the pinned
+    /// chats. Reinstalled when either changes, so the next page load gets the current ones.
+    private func installPageScript() {
+        let controller = webView.configuration.userContentController
+        let settings = appliedAppearance?.pageSettingsJSON ?? "{}"
+        let pins = defaults.string(forKey: Pref.pinnedChats) ?? "[]"
+        controller.removeAllUserScripts()
+        for source in ["window.__mdeskSettings = \(settings); window.__mdeskPins = \(pins);", bridgeSource] {
+            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
+    }
+
+    /// The pinned chats, kept by the app because the page's own storage isn't reliably saved on quit.
+    private func savePins(_ pins: Any?) {
+        guard let pins, let data = try? JSONSerialization.data(withJSONObject: pins),
+              let json = String(data: data, encoding: .utf8) else { return }
+        defaults.set(json, forKey: Pref.pinnedChats)
+        installPageScript()
     }
 
     @objc func showSettings(_ sender: Any?) {
@@ -344,6 +369,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         case "haptic":
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         case "messageMenu": showMessageMenu(body)
+        case "chatMenu": showChatMenu(body)
+        case "pins": savePins(body["pins"])
         case "confirm": showConfirmation(body)
         case "emojiCatalog": receiveEmojiCatalog(body)
         case "theme":
@@ -394,6 +421,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
 
+    /// Right-clicking a chat in the sidebar (a row or a pinned chat). Each choice goes back to the page
+    /// (chatAction in bridge.js), which keeps the pins and presses Facebook's own menu items.
+    private func showChatMenu(_ body: [String: Any]) {
+        guard let path = body["path"] as? String else { return }
+        let menu = ChatMenu.make(
+            items: body["items"] as? [String] ?? [],
+            pinned: body["pinned"] as? Bool == true,
+            canPin: body["full"] as? Bool != true // up to 9 pins, like Messages
+        ) { [weak self] action, label in
+            self?.webView.callAsyncJavaScript(
+                "window.__mdesk?.chatAction(path, action, label)",
+                arguments: ["path": path, "action": action, "label": label ?? NSNull()],
+                in: nil, in: .page, completionHandler: nil)
+        }
+        let point = webView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        DispatchQueue.main.async { [weak self] in
+            guard let webView = self?.webView else { return }
+            menu.popUp(positioning: nil, at: point, in: webView)
+        }
+    }
+
     /// The app's own quick reactions (Facebook only allows six). Until customized: the first five of
     /// Facebook's.
     private func quickReactions(seed: [String]) -> [String] {
@@ -434,21 +482,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         customizer?.model.catalog = catalog
     }
 
-    /// Facebook's unsend / remove confirmation, asked as a native alert instead (confirmRemoval in
-    /// bridge.js): just Facebook's choices as buttons, no text. The answer goes back to the page.
+    /// A Facebook popup (unsend, delete, mute, block…), asked as a native alert instead (askDialog in
+    /// bridge.js): an optional title, Facebook's choices as buttons, and Cancel. The answer goes back
+    /// to the page.
     private func showConfirmation(_ body: [String: Any]) {
-        let options = body["options"] as? [[String: String]] ?? []
+        let options = body["options"] as? [[String: Any]] ?? []
         let alert = NSAlert()
-        if options.isEmpty {
-            alert.addButton(withTitle: body["confirm"] as? String ?? "Remove").hasDestructiveAction = true
-        } else {
-            for (index, option) in options.enumerated() {
-                alert.addButton(withTitle: option["title"] ?? "").hasDestructiveAction = index == 0
-            }
+        alert.messageText = body["title"] as? String ?? ""
+        for option in options {
+            alert.addButton(withTitle: option["title"] as? String ?? "").hasDestructiveAction =
+                option["destructive"] as? Bool == true
         }
         alert.addButton(withTitle: body["cancel"] as? String ?? "Cancel").keyEquivalent = "\u{1b}"
 
-        let choices = max(options.count, 1)
+        let choices = options.count
         alert.beginSheetModal(for: window) { [weak self] response in
             let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
             self?.webView.callAsyncJavaScript(

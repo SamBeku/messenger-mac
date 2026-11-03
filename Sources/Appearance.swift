@@ -7,6 +7,7 @@ struct AppearanceSettings: Equatable {
     var compact: Bool
     var hideFilters: Bool
     var hideNudges: Bool
+    var messagesList: Bool
     var closeInfoPanel: Bool
     /// Hex colors, or nil when the custom accent color is off.
     var accent: String?
@@ -18,6 +19,7 @@ struct AppearanceSettings: Equatable {
         compact = defaults.bool(forKey: Pref.compactList)
         hideFilters = defaults.bool(forKey: Pref.hideFilters)
         hideNudges = defaults.bool(forKey: Pref.hideNudges)
+        messagesList = defaults.bool(forKey: Pref.messagesList)
         closeInfoPanel = defaults.bool(forKey: Pref.closeInfoPanel)
         if defaults.bool(forKey: Pref.accentEnabled) {
             // No color picked yet means "use the Mac's accent color".
@@ -30,7 +32,8 @@ struct AppearanceSettings: Equatable {
     var pageSettings: [String: Any] {
         [
             "seamless": seamless, "glass": glass, "compact": compact,
-            "hideFilters": hideFilters, "hideNudges": hideNudges, "closeInfoPanel": closeInfoPanel,
+            "hideFilters": hideFilters, "hideNudges": hideNudges, "messagesList": messagesList,
+            "closeInfoPanel": closeInfoPanel,
             "accent": accent ?? NSNull(), "accentLight": accentLight ?? NSNull(),
         ]
     }
