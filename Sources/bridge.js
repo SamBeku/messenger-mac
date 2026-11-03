@@ -52,9 +52,14 @@
       --mwp-primary-theme-color: var(--mdesk-accent) !important;
       --reaction-pill-multireact-selected-color: var(--mdesk-accent-light) !important;
     }
-    /* The bubble gradient is also written inline as fixed colors on the message list */
+    /* Facebook paints the bubble color behind the whole message list and leaves holes in each row
+       for bubbles; scrolling fast, rows not drawn yet show that backdrop as a blue flash. Fill the
+       bubbles themselves instead (solid accent) and drop the backdrop. */
+    ${M}[data-mdesk-accent] [role="main"] [style*="--chat-outgoing-message-background-gradient"] {
+      --chat-outgoing-message-bubble-background-color: var(--mdesk-accent) !important;
+    }
     ${M}[data-mdesk-accent] [role="main"] [style*="--chat-outgoing-message-background-gradient"][style*="background-image"] {
-      background-image: linear-gradient(var(--mdesk-accent-light), var(--mdesk-accent)) !important;
+      background-image: none !important;
     }
 
     /* Compact chat list */
