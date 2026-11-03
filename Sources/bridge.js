@@ -141,6 +141,12 @@
     ${M} [role="main"] [role="article"] [role="toolbar"] { opacity: 0 !important; pointer-events: none !important; }
     /* Facebook focuses a message after some actions; its focus ring spans the whole row as a blue bar */
     ${M} [role="main"] [data-message-id]:focus-visible { outline: none !important; }
+    /* When the user's message was seen, next to the seen avatar (markSeen) */
+    ${M} [data-mdesk-seen] { position: relative !important; }
+    ${M} [data-mdesk-seen]::before {
+      content: attr(data-mdesk-seen); position: absolute; right: var(--mdesk-seen-right, 40px); top: 50%; transform: translateY(-50%);
+      white-space: nowrap; font: 11px/1 -apple-system, system-ui, sans-serif; color: var(--secondary-text);
+    }
     /* The time tooltip when hovering a message (swipe left for times) */
     [data-mdesk-part="time-tooltip"] { display: none !important; }
     /* Emoji typed in the message box: Facebook paints its own picture behind an invisible real
@@ -1077,6 +1083,39 @@
   };
 
   // Runs right after every DOM change, before the page is drawn, so nothing flashes.
+  // ---- When a message was seen ----------------------------------------------------------
+  // Facebook marks the last message someone has seen with their tiny avatar, and only says when in
+  // its alt text ("Seen by Alex at 11:55pm"). Under the user's own message that time is written out
+  // next to the avatar, like Messages' "Read 11:55 PM". Messages from others get nothing (as in Messages).
+  const seenCaption = (receipts) => {
+    const seen = receipts.map((img) => img.alt.match(/^Seen by (.+) at (.+)$/i));
+    if (seen.length === 1) return seen[0] ? `Seen ${seen[0][2]}` : receipts[0].alt;
+    if (seen.every(Boolean)) return `Seen by ${seen.map((m) => m[1].split(' ')[0]).join(', ')}`;
+    return receipts.map((img) => img.alt).join(' · ');
+  };
+
+  const markSeen = () => {
+    const stale = new Set(document.querySelectorAll('[data-mdesk-seen]'));
+    for (const message of document.querySelectorAll('[role="main"] [role="log"] [role="article"]')) {
+      // Receipts are the images whose alt text has a time (avatars and reaction emoji don't).
+      const receipts = [...message.querySelectorAll('img[alt]')].filter((img) => TIME.test(img.alt));
+      if (!receipts.length) continue;
+      const bubble = bubbleRect(message);
+      const box = message.getBoundingClientRect();
+      if (!bubble || bubble.left + bubble.width / 2 < box.left + box.width / 2) continue; // not the user's
+      // The receipts' row: their highest ancestor that is still only a row high.
+      let row = receipts[0];
+      while (row.parentElement !== message && row.parentElement.offsetHeight <= 40) row = row.parentElement;
+      const caption = seenCaption(receipts);
+      if (row.dataset.mdeskSeen !== caption) row.dataset.mdeskSeen = caption;
+      // Left of the avatars (a group has several in a line).
+      const avatars = Math.min(...receipts.map((img) => img.getBoundingClientRect().left));
+      row.style.setProperty('--mdesk-seen-right', `${Math.round(row.getBoundingClientRect().right - avatars + 6)}px`);
+      stale.delete(row);
+    }
+    for (const row of stale) delete row.dataset.mdeskSeen;
+  };
+
   // ---- Chat looks: wallpaper and bubble color --------------------------------------------
   // Set by right-clicking a chat's background (ChatLooks.swift); a chat's own choice wins over the
   // one for all chats ("default"). Wallpaper images come from the app when first shown.
@@ -1236,6 +1275,7 @@
 
   const onDomChange = (records) => {
     markComposer();
+    markSeen();
     applyLooks();
     for (const record of records) {
       const target = record.target;
@@ -1276,6 +1316,16 @@
     const match = label.match(/^(.*?\d{1,2}[:.]\d{2})/);
     return match ? match[1].replace(/^(kell|at)\s+/i, '') : null;
   };
+
+  // Where a message shows (text, photo, sticker, video, big emoji) rather than its row, which also
+  // holds reactions and reply quotes. The lowest one on screen is the message itself ("X replied to
+  // Y" and the quote sit above it, in any page order). Skipped: empty elements, avatars (28px) and
+  // reaction emoji (16px).
+  const bubbleRect = (message) => [...message.querySelectorAll('[data-message-id] :is([dir="auto"], img, video, [role="img"])')]
+    .map((el) => [el, el.getBoundingClientRect()])
+    .filter(([el, b]) => b.width > 0 && b.height > 0 && (el.matches('[dir="auto"]') || (b.width >= 32 && b.height >= 32)))
+    .map(([, b]) => b)
+    .reduce((lowest, b) => (!lowest || b.bottom > lowest.bottom ? b : lowest), null);
 
   const add = (parent, className) => parent.appendChild(Object.assign(document.createElement('div'), { className }));
 
@@ -1373,15 +1423,8 @@
     const top = Math.max(r.top, box.top);
     Object.assign(cover.style, { left: `${box.left}px`, top: `${top}px`, height: `${Math.min(r.bottom, box.bottom) - top}px` });
     const icon = add(fading, 'mdesk-reply');
-    // Line up with what the message shows (text, photo, sticker, video, big emoji), not the row,
-    // which also holds reactions and reply quotes. The lowest one on screen is the message itself
-    // ("X replied to Y" and the quote sit above it, in any page order). Skipped: empty elements,
-    // avatars (28px) and reaction emoji (16px).
-    const bubble = [...message.querySelectorAll('[data-message-id] :is([dir="auto"], img, video, [role="img"])')]
-      .map((el) => [el, el.getBoundingClientRect()])
-      .filter(([el, b]) => b.width > 0 && b.height > 0 && (el.matches('[dir="auto"]') || (b.width >= 32 && b.height >= 32)))
-      .map(([, b]) => b)
-      .reduce((lowest, b) => (!lowest || b.bottom > lowest.bottom ? b : lowest), null) || r;
+    // Line up with what the message shows, not the row.
+    const bubble = bubbleRect(message) || r;
     const svg = icon.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'svg'));
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.appendChild(document.createElementNS(svg.namespaceURI, 'path'))
@@ -1466,7 +1509,7 @@
     window.addEventListener('resize', scheduleMarking); // keeps the swipe area current
     new MutationObserver(scheduleMarking).observe(root, { childList: true, subtree: true });
     new MutationObserver(onDomChange).observe(root, {
-      childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['src'],
+      childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['src', 'alt'],
     });
 
     // Right-clicking a message opens the app's message menu. A right-click on text selects the
