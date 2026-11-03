@@ -48,6 +48,7 @@ func unwrapLinkShim(_ url: URL) -> URL {
 enum Pref {
     static let notifications = "notificationsEnabled"
     static let sound = "notificationSound"
+    static let soundName = "notificationSoundName"
     static let previews = "notificationPreviews"
     static let zoom = "pageZoom"
     static let lastChat = "lastChatURL"
@@ -60,6 +61,7 @@ enum Pref {
     static let hideNudges = "hideNudges"
     static let messagesList = "messagesStyleChatList"
     static let pinnedChats = "pinnedChats"
+    static let chatLooks = "chatLooks"
     static let closeInfoPanel = "closeInfoPanel"
     static let quickReactions = "quickReactions"
     static let emojiCatalog = "emojiCatalog"
@@ -80,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var appliedAppearance: AppearanceSettings?
     private var popups: [PopupWindow] = []
     private let dockBadge = DockBadgeView()
+    private var colorPick: ColorPick?
     private var urlObservation: NSKeyValueObservation?
     private var lastMessengerURL: URL?
     private var downloads: [ObjectIdentifier: URL] = [:]
@@ -95,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             Pref.notifications: true, Pref.sound: true, Pref.previews: true, Pref.zoom: 1.0,
             Pref.seamlessTitleBar: true, Pref.glassSidebar: true, Pref.accentEnabled: true,
             Pref.compactList: true, Pref.hideFilters: true, Pref.hideNudges: true, Pref.closeInfoPanel: true,
-            Pref.messagesList: true,
+            Pref.messagesList: true, Pref.soundName: NotificationSound.defaultName,
         ])
         NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.mainMenu = buildMainMenu()
@@ -247,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let settings = appliedAppearance?.pageSettingsJSON ?? "{}"
         let pins = defaults.string(forKey: Pref.pinnedChats) ?? "[]"
         controller.removeAllUserScripts()
-        for source in ["window.__mdeskSettings = \(settings); window.__mdeskPins = \(pins); window.__mdeskSymbols = \(PageSymbols.json);", bridgeSource] {
+        for source in ["window.__mdeskSettings = \(settings); window.__mdeskPins = \(pins); window.__mdeskLooks = \(ChatLooks.json); window.__mdeskSymbols = \(PageSymbols.json);", bridgeSource] {
             controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
     }
@@ -372,6 +375,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         case "chatMenu": showChatMenu(body)
         case "composerMenu": showComposerMenu()
         case "pins": savePins(body["pins"])
+        case "lookMenu": showLookMenu(body)
+        case "wallpaper": sendWallpaper(body["file"] as? String)
         case "confirm": showConfirmation(body)
         case "emojiCatalog": receiveEmojiCatalog(body)
         case "theme":
@@ -420,6 +425,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             guard let webView = self?.webView else { return }
             menu.popUp(positioning: nil, at: point, in: webView)
         }
+    }
+
+    /// Right-clicking a chat's background (not a message): wallpaper and bubble color (ChatLooks).
+    private func showLookMenu(_ body: [String: Any]) {
+        guard let path = body["path"] as? String else { return }
+        let menu = ChatLooks.menu(for: path) { [weak self] scope, key, choice in
+            self?.chooseLook(scope: scope, key: key, choice: choice)
+        }
+        let point = webView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        DispatchQueue.main.async { [weak self] in
+            guard let webView = self?.webView else { return }
+            menu.popUp(positioning: nil, at: point, in: webView)
+        }
+    }
+
+    private func chooseLook(scope: String, key: String, choice: ChatLooks.Choice) {
+        switch choice {
+        case .reset: updateLook(key, nil, for: scope)
+        case .none: updateLook(key, "none", for: scope)
+        case .color:
+            let current = ChatLooks.all[scope]?[key].flatMap { NSColor(hex: $0.replacingOccurrences(of: "color:", with: "")) }
+            colorPick = ColorPick(color: current) { [weak self] color in
+                let hex = color.hexString
+                self?.updateLook(key, key == "wallpaper" ? "color:\(hex)" : hex, for: scope)
+            }
+        case .image:
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [.image]
+            panel.message = "Choose a wallpaper"
+            panel.beginSheetModal(for: window) { [weak self] response in
+                guard response == .OK, let url = panel.url, let file = ChatLooks.importImage(url) else { return }
+                self?.updateLook(key, "image:\(file)", for: scope)
+            }
+        }
+    }
+
+    private func updateLook(_ key: String, _ value: String?, for scope: String) {
+        ChatLooks.set(key, value, for: scope)
+        installPageScript()
+        webView.callAsyncJavaScript(
+            "window.__mdesk?.setLooks(JSON.parse(looks))", arguments: ["looks": ChatLooks.json],
+            in: nil, in: .page, completionHandler: nil)
+    }
+
+    /// A wallpaper image the page asked for (it only keeps the ones it shows).
+    private func sendWallpaper(_ file: String?) {
+        guard let file, let url = ChatLooks.dataURL(file) else { return }
+        webView.callAsyncJavaScript(
+            "window.__mdesk?.setWallpaperImage(file, url)", arguments: ["file": file, "url": url],
+            in: nil, in: .page, completionHandler: nil)
     }
 
     /// The ⊕ next to the message box: what Facebook's attach / sticker / GIF / voice buttons do,
@@ -938,6 +993,22 @@ final class PopupWindow: NSObject, NSWindowDelegate {
 
 // MARK: - Native notifications
 
+/// The new-message sound: one of the Mac's alert sounds, picked in Settings.
+enum NotificationSound {
+    static let defaultName = "Glass"
+
+    /// The sounds in /System/Library/Sounds (Basso, Blow, Bottle…).
+    static let names: [String] = {
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: "/System/Library/Sounds")) ?? []
+        return files.filter { $0.hasSuffix(".aiff") }.map { ($0 as NSString).deletingPathExtension }.sorted()
+    }()
+
+    static func play(_ name: String? = nil) {
+        let name = name ?? UserDefaults.standard.string(forKey: Pref.soundName) ?? defaultName
+        (NSSound(named: name) ?? NSSound(named: defaultName))?.play()
+    }
+}
+
 final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
     var onClick: ((String) -> Void)?
     var isWindowOnScreen: (() -> Bool)?
@@ -960,7 +1031,9 @@ final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
         content.body = body
         content.threadIdentifier = thread
         content.userInfo = ["id": id]
-        if sound { content.sound = .default }
+        // The app plays the sound itself: macOS drops the banner's own sound along with the banner for
+        // an app without a real signature, and this way the sound is the one picked in Settings.
+        if sound && !(NSApp.isActive && isWindowOnScreen?() == true) { NotificationSound.play() }
 
         guard let iconURL else { return deliver(id, content) }
         // Attach the sender's photo if it arrives quickly; never hold the banner back for long.
@@ -996,7 +1069,7 @@ final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         // Only called while the app is frontmost. If the window is on screen, Messenger already shows it.
         Task { @MainActor in
-            completionHandler(self.isWindowOnScreen?() == true ? [] : [.banner, .list, .sound])
+            completionHandler(self.isWindowOnScreen?() == true ? [] : [.banner, .list])
         }
     }
 

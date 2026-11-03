@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage(Pref.closeInfoPanel) private var closeInfoPanel = true
     @AppStorage(Pref.notifications) private var notifications = true
     @AppStorage(Pref.sound) private var sound = true
+    @AppStorage(Pref.soundName) private var soundName = NotificationSound.defaultName
     @AppStorage(Pref.previews) private var previews = true
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
 
@@ -59,6 +60,11 @@ struct SettingsView: View {
             Section("Notifications") {
                 Toggle("Show notifications", isOn: $notifications)
                 Toggle("Play sound", isOn: $sound).disabled(!notifications)
+                Picker("Sound", selection: $soundName) {
+                    ForEach(NotificationSound.names, id: \.self) { Text($0).tag($0) }
+                }
+                .disabled(!notifications || !sound)
+                .onChange(of: soundName) { _, name in NotificationSound.play(name) } // a preview
                 Toggle("Show message previews", isOn: $previews).disabled(!notifications)
             }
 
@@ -67,7 +73,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 790) // a grouped Form scrolls, so it has no natural height
+        .frame(width: 440, height: 820) // a grouped Form scrolls, so it has no natural height
     }
 
     private var accentBinding: Binding<Color> {
