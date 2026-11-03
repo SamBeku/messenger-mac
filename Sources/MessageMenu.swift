@@ -61,6 +61,54 @@ enum MessageMenu {
     }
 }
 
+/// The right-click menu for a chat in the sidebar: Pin / Unpin, then Facebook's own options for the
+/// chat (read from its "…" menu by openChatMenu in bridge.js), with icons and grouped like Messages.
+/// Each choice goes back to the page: "pin", "unpin", or "item" with Facebook's label.
+enum ChatMenu {
+    /// Icon, group, and whether the item asks something before acting (an ellipsis), by label start.
+    private static let kinds: [(prefix: String, symbol: String, group: Int, asks: Bool)] = [
+        ("mark as unread", "envelope.badge", 0, false),
+        ("mark as read", "envelope.open", 0, false),
+        ("mute", "bell.slash", 0, true),
+        ("unmute", "bell", 0, false),
+        ("audio call", "phone", 1, false),
+        ("video chat", "video", 1, false),
+        ("archive", "archivebox", 2, false),
+        ("unarchive", "archivebox", 2, false),
+        ("block", "hand.raised", 2, true),
+        ("unblock", "hand.raised", 2, false),
+        ("delete", "trash", 3, true),
+        ("leave", "rectangle.portrait.and.arrow.right", 3, true),
+    ]
+
+    static func make(items: [String], pinned: Bool, canPin: Bool,
+                     perform: @escaping (_ action: String, _ label: String?) -> Void) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        var groups: [[NSMenuItem]] = Array(repeating: [], count: 4)
+
+        let pin = ActionMenuItem(pinned ? "Unpin" : "Pin", symbol: pinned ? "pin.slash" : "pin") {
+            perform(pinned ? "unpin" : "pin", nil)
+        }
+        pin.isEnabled = pinned || canPin
+        groups[0].append(pin)
+
+        for label in items {
+            let kind = kinds.first { label.lowercased().hasPrefix($0.prefix) }
+            let item = ActionMenuItem(kind?.asks == true ? "\(label)…" : label, symbol: kind?.symbol) {
+                perform("item", label)
+            }
+            groups[kind?.group ?? 2].append(item)
+        }
+
+        for group in groups where !group.isEmpty {
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            group.forEach(menu.addItem)
+        }
+        return menu
+    }
+}
+
 /// A menu item that runs a closure, with an optional SF Symbol icon.
 final class ActionMenuItem: NSMenuItem {
     private let handler: () -> Void

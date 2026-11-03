@@ -20,6 +20,7 @@
   const M = 'html[data-mdesk-messenger]';
   const THEMES = ':is(.__fb-light-mode, .__fb-dark-mode)'; // Facebook redefines its colors on these
   const LIST = '[aria-label="Thread list"]';
+  const ML = `${M}[data-mdesk-messages-list]`;
 
   const STYLES = `
     /* Facebook's top bar (feed, Marketplace, notifications…) */
@@ -64,6 +65,60 @@
 
     /* Compact chat list */
     ${M}[data-mdesk-compact] ${LIST} [role="grid"] { zoom: 0.85; }
+
+    /* Messages-style chat list: time at the top right, two lines of preview, hairlines between
+       chats, the open chat in the accent color. The parts are tagged by markChats(). */
+    ${ML} [data-mdesk-chat="text"] { position: relative !important; }
+    ${ML} [data-mdesk-chat="name"] { padding-right: 52px !important; box-sizing: border-box; }
+    ${ML} [data-mdesk-chat="age"] { position: absolute !important; top: 3px; right: 0; }
+    ${ML} [data-mdesk-chat="age-sep"] { display: none !important; }
+    ${ML} [data-mdesk-chat="subtitle"] { height: auto !important; align-items: flex-start !important; }
+    ${ML} [data-mdesk-chat="preview"], ${ML} [data-mdesk-chat="preview"] * { white-space: normal !important; }
+    ${ML} [data-mdesk-chat="preview"] {
+      display: -webkit-box !important; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden !important;
+    }
+    /* Facebook trims each line's spacing with negative-margin pseudo-elements; clipped to two lines,
+       that cuts off the bottom of the letters */
+    ${ML} [data-mdesk-chat="preview"]::before, ${ML} [data-mdesk-chat="preview"]::after,
+    ${ML} [data-mdesk-chat="preview"] *::before, ${ML} [data-mdesk-chat="preview"] *::after { display: none !important; }
+    ${ML} ${LIST} [role="row"] a[href*="/t/"]::after {
+      content: ''; position: absolute; left: 76px; right: 8px; bottom: 0; pointer-events: none;
+      border-bottom: 1px solid color-mix(in srgb, var(--primary-text) 10%, transparent);
+    }
+    ${ML} ${LIST} [role="row"] a[aria-current="page"]::after { display: none; }
+    ${ML} ${LIST} a[aria-current="page"] { background-color: var(--accent) !important; border-radius: 10px !important; }
+    ${ML} ${LIST} a[aria-current="page"] :is(span, abbr) { color: #fff !important; }
+
+    /* Facebook's "…" button on chats: right-click a chat instead. Invisible, so the app can still press it. */
+    ${M} [data-mdesk-chat="more"] { opacity: 0 !important; pointer-events: none !important; }
+
+    /* Pinned chats: a grid of big avatars above the list, like Messages */
+    ${M} [data-mdesk-pinned] { display: none !important; }
+    .mdesk-pins { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px 6px; padding: 2px 12px 10px; }
+    .mdesk-pin {
+      position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px;
+      min-width: 0; padding: 8px 4px 7px; border-radius: 12px;
+    }
+    .mdesk-pin:hover { background: var(--hover-overlay); }
+    .mdesk-pins { position: relative; }
+    .mdesk-pins.mdesk-sorting .mdesk-pin:not(.mdesk-current) { background: none; }
+    .mdesk-pin.mdesk-dragging { z-index: 1; scale: 1.06; transition: scale 0.15s; }
+    .mdesk-pin.mdesk-current { background: var(--accent); }
+    .mdesk-pin-avatar {
+      position: relative; width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center;
+      background: var(--secondary-button-background); color: var(--primary-text);
+      font: 600 26px -apple-system, system-ui, sans-serif;
+    }
+    .mdesk-pin-avatar:has(img) { background: none; }
+    .mdesk-pin-avatar img { position: absolute; border-radius: 50%; aspect-ratio: 1; object-fit: cover; }
+    .mdesk-pin-name {
+      max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font: 12px/1.25 -apple-system, system-ui, sans-serif; color: var(--secondary-text);
+    }
+    .mdesk-current .mdesk-pin-name { color: #fff; }
+    .mdesk-pin-unread {
+      position: absolute; top: 10px; left: 8px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent);
+    }
 
     /* Parts tagged by markParts() */
     ${M}[data-mdesk-hide-filters] [data-mdesk-part="filters"],
@@ -182,6 +237,8 @@
       }
     }
 
+    if (grid) markChats(grid);
+
     // Info panel: close it once per chat, so the ⓘ button can still open it on purpose.
     if (settings.closeInfoPanel && infoPanelHandledFor !== location.pathname) {
       const button = document.querySelector('[role="main"] [aria-label="Conversation information"]');
@@ -192,10 +249,254 @@
     }
   };
 
+  // ---- Chat list: Messages-style rows and pinned chats -----------------------------------
+  // Facebook has no pinned chats, so the app keeps its own list (window.__mdeskPins, saved by
+  // savePins in main.swift): each pin remembers the chat's name and avatar, refreshed whenever its
+  // row is in the list. The pinned rows stay in the list, hidden, so a pin opens its chat by
+  // clicking the real row.
+
+  const MAX_PINS = 9;
+  let pins = Array.isArray(window.__mdeskPins) ? window.__mdeskPins : [];
+  const savePins = () => native({ type: 'pins', pins });
+  const isPinned = (path) => pins.some((pin) => pin.path === path);
+
+  // A row's chat: where it leads, its name, avatar (one photo, or two overlapping for a group
+  // without one, as fractions of the avatar's size) and whether it's unread (bold name).
+  const readChat = (row) => {
+    const link = row.querySelector('a[href*="/t/"]');
+    const name = link?.querySelector('span[dir="auto"]');
+    if (!name) return null;
+    const box = link.getBoundingClientRect();
+    const photos = [...link.querySelectorAll('img')]
+      .map((img) => [img, img.getBoundingClientRect()])
+      .filter(([, r]) => r.width >= 24 && r.left - box.left < 80); // not the "seen" heads or badges
+    const left = Math.min(...photos.map(([, r]) => r.left));
+    const top = Math.min(...photos.map(([, r]) => r.top));
+    const size = Math.max(...photos.map(([, r]) => Math.max(r.right - left, r.bottom - top)));
+    const label = name.querySelector('span') || name;
+    return {
+      row, link, name,
+      path: norm(link.href),
+      title: name.textContent.trim(),
+      avatar: photos.map(([img, r]) => ({
+        src: img.currentSrc || img.src, x: (r.left - left) / size, y: (r.top - top) / size, size: r.width / size,
+      })),
+      unread: Number(getComputedStyle(label).fontWeight) >= 600,
+    };
+  };
+
+  // Tags a row's parts for the Messages-style CSS: name, then a subtitle of preview · time (· nudge).
+  const tagRow = (chat) => {
+    // Facebook's "…" button: invisible, still there for the right-click menu to use.
+    const more = chat.row.querySelectorAll('[role="gridcell"]')[1];
+    if (more) more.dataset.mdeskChat = 'more';
+    const text = chat.name.parentElement;
+    const subtitle = text.lastElementChild;
+    if (subtitle === chat.name) return;
+    text.dataset.mdeskChat = 'text';
+    chat.name.dataset.mdeskChat = 'name';
+    subtitle.dataset.mdeskChat = 'subtitle';
+    const [preview, separator, age] = subtitle.children;
+    if (preview) preview.dataset.mdeskChat = 'preview';
+    if (age && separator.textContent.trim() === '·') {
+      separator.dataset.mdeskChat = 'age-sep';
+      age.dataset.mdeskChat = 'age';
+    }
+  };
+
+  let pinsBox = null;
+  let pinsDrawn = '';
+
+  const drawPins = (grid, chats) => {
+    const panel = grid.closest('[role="tabpanel"]') || grid;
+    if (!pins.length) {
+      pinsBox?.remove();
+      pinsDrawn = '';
+      return;
+    }
+    if (!pinsBox) {
+      pinsBox = Object.assign(document.createElement('div'), { className: 'mdesk-pins' });
+      pinsBox.addEventListener('mousedown', startPinDrag);
+      pinsBox.addEventListener('click', (event) => {
+        const tile = event.target.closest('.mdesk-pin');
+        if (tile) openChat(tile.dataset.path);
+      });
+    }
+    if (pinsBox.nextElementSibling !== panel) panel.before(pinsBox);
+
+    const current = norm(location.href);
+    const state = JSON.stringify([pins, current, pins.map((pin) => chats.get(pin.path)?.unread)]);
+    if (state === pinsDrawn || pinDrag) return; // not mid-drag: that would drop the tile being dragged
+    pinsDrawn = state;
+    pinsBox.replaceChildren(...pins.map((pin) => {
+      const tile = Object.assign(document.createElement('div'), { className: 'mdesk-pin' });
+      tile.dataset.path = pin.path;
+      tile.classList.toggle('mdesk-current', pin.path === current);
+      const avatar = add(tile, 'mdesk-pin-avatar');
+      avatar.textContent = [...pin.title][0] || '';
+      for (const part of pin.avatar) {
+        const img = avatar.appendChild(document.createElement('img'));
+        img.src = part.src;
+        img.draggable = false;
+        img.onerror = () => img.remove(); // an old photo link; the row brings a fresh one
+        Object.assign(img.style, { left: `${part.x * 100}%`, top: `${part.y * 100}%`, width: `${part.size * 100}%` });
+      }
+      if (chats.get(pin.path)?.unread) add(tile, 'mdesk-pin-unread');
+      add(tile, 'mdesk-pin-name').textContent = pin.title;
+      return tile;
+    }));
+  };
+
+  // Dragging a pin reorders the pins: the dragged one follows the pointer, the others slide out of its
+  // way, and the new order is saved on drop. A press without moving stays a click.
+  let pinDrag = null;
+  const SLIDE = { duration: 220, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' };
+
+  // Where a tile's grid slot is on screen (offsetLeft/Top ignore the drag's transform).
+  const slotOf = (tile) => {
+    const box = pinsBox.getBoundingClientRect();
+    return { left: box.left + tile.offsetLeft, top: box.top + tile.offsetTop };
+  };
+
+  const startPinDrag = (event) => {
+    const tile = event.button === 0 && event.target.closest('.mdesk-pin');
+    if (!tile) return;
+    event.preventDefault(); // no text selection or image drag
+    const slot = slotOf(tile);
+    const press = { tile, x: event.clientX, y: event.clientY, grabX: event.clientX - slot.left, grabY: event.clientY - slot.top };
+    let frame = 0;
+    let pointer = null;
+
+    const follow = () => {
+      frame = 0;
+      const now = slotOf(tile);
+      tile.style.transform = `translate(${snap(pointer.x - press.grabX - now.left)}px, ${snap(pointer.y - press.grabY - now.top)}px)`;
+      // The slot under the pointer's tile center takes the dragged pin; the others slide over (FLIP).
+      const centerX = pointer.x - press.grabX + tile.offsetWidth / 2;
+      const centerY = pointer.y - press.grabY + tile.offsetHeight / 2;
+      const tiles = [...pinsBox.children];
+      const target = tiles.reduce((best, other) => {
+        const r = slotOf(other);
+        const distance = Math.hypot(r.left + other.offsetWidth / 2 - centerX, r.top + other.offsetHeight / 2 - centerY);
+        return distance < best.distance ? { other, distance } : best;
+      }, { other: tile, distance: Infinity }).other;
+      if (target === tile) return;
+      const before = new Map(tiles.map((other) => [other, slotOf(other)]));
+      const from = tiles.indexOf(tile);
+      const to = tiles.indexOf(target);
+      pinsBox.insertBefore(tile, to > from ? target.nextSibling : target);
+      for (const other of tiles) {
+        if (other === tile) continue;
+        const was = before.get(other);
+        const now = slotOf(other);
+        if (was.left === now.left && was.top === now.top) continue;
+        other.animate([{ transform: `translate(${was.left - now.left}px, ${was.top - now.top}px)` }, { transform: 'none' }], SLIDE);
+      }
+      follow(); // re-place the dragged tile from its new slot
+    };
+
+    const move = (e) => {
+      pointer = { x: e.clientX, y: e.clientY };
+      if (!pinDrag) {
+        if (Math.hypot(pointer.x - press.x, pointer.y - press.y) < 4) return;
+        pinDrag = press;
+        tile.classList.add('mdesk-dragging');
+        pinsBox.classList.add('mdesk-sorting');
+      }
+      if (!frame) frame = requestAnimationFrame(follow);
+    };
+
+    const drop = () => {
+      window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', drop, true);
+      if (!pinDrag) return;
+      cancelAnimationFrame(frame);
+      // The click that ends a drag (fired right after this mouse-up, if at all) doesn't open the chat.
+      const swallow = (e) => e.stopPropagation();
+      window.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener('click', swallow, true));
+      const order = [...pinsBox.children].map((t) => t.dataset.path);
+      pins = order.map((path) => pins.find((pin) => pin.path === path)).filter(Boolean);
+      savePins();
+      const landing = tile.animate([{ transform: tile.style.transform || 'none' }, { transform: 'none' }], SLIDE);
+      tile.style.transform = '';
+      tile.classList.remove('mdesk-dragging');
+      landing.finished.catch(() => {}).then(() => {
+        pinsBox.classList.remove('mdesk-sorting');
+        pinDrag = null;
+        markParts();
+      });
+    };
+
+    window.addEventListener('mousemove', move, true);
+    window.addEventListener('mouseup', drop, true);
+  };
+
+  const markChats = (grid) => {
+    const chats = new Map();
+    for (const row of grid.querySelectorAll('[role="row"]')) {
+      const chat = readChat(row);
+      if (!chat) continue;
+      chats.set(chat.path, chat);
+      tagRow(chat);
+      row.toggleAttribute('data-mdesk-pinned', isPinned(chat.path));
+    }
+    let changed = false;
+    for (const pin of pins) {
+      const chat = chats.get(pin.path);
+      if (!chat?.avatar.length) continue;
+      if (chat.title !== pin.title || JSON.stringify(chat.avatar) !== JSON.stringify(pin.avatar)) {
+        Object.assign(pin, { title: chat.title, avatar: chat.avatar });
+        changed = true;
+      }
+    }
+    if (changed) savePins();
+    drawPins(grid, chats);
+  };
+
+  const chatRows = () => [...document.querySelectorAll(`${LIST} [role="row"]`)].map(readChat).filter(Boolean);
+
+  const openChat = (path) => {
+    const chat = chatRows().find((c) => c.path === path);
+    if (chat) chat.link.click();
+    else location.assign(path); // not loaded in the list: open it with a page load
+  };
+
+  // Right-click on a row or a pin: the app's chat menu (showChatMenu in main.swift), with Pin /
+  // Unpin and the items of Facebook's "…" menu for that chat.
+  const chatMenuButton = (path) => () => {
+    const row = chatRows().find((chat) => chat.path === path)?.row;
+    return row?.querySelector('[data-mdesk-chat="more"] [role="button"]') || null;
+  };
+  let chatMenuId = 0;
+
+  const openChatMenu = async (target) => {
+    const path = target.closest('.mdesk-pin')?.dataset.path || readChat(target.closest('[role="row"]'))?.path;
+    if (!path) return;
+    const id = ++chatMenuId;
+    const items = (await readMenuItems(chatMenuButton(path))).filter((label) => !HIDDEN_CHAT_ITEMS.test(label));
+    if (id !== chatMenuId) return; // right-clicked something else meanwhile
+    native({ type: 'chatMenu', path, items, pinned: isPinned(path), full: pins.length >= MAX_PINS });
+  };
+
+  const chatAction = (path, action, label) => {
+    if (action === 'item') return chooseMenuItem(chatMenuButton(path), label);
+    if (action === 'unpin') {
+      pins = pins.filter((pin) => pin.path !== path);
+    } else if (action === 'pin' && !isPinned(path) && pins.length < MAX_PINS) {
+      const chat = chatRows().find((c) => c.path === path);
+      if (!chat) return;
+      pins.push({ path, title: chat.title, avatar: chat.avatar });
+    }
+    savePins();
+    markParts();
+  };
+
   // ---- Settings (from the Settings window) ------------------------------------------
 
   const OPTION_ATTRIBUTES = {
     seamless: 'seamless', glass: 'glass', compact: 'compact', hideFilters: 'hide-filters', hideNudges: 'hide-nudges',
+    messagesList: 'messages-list',
   };
   const accentStyle = document.createElement('style');
 
@@ -264,37 +565,53 @@
     }
   };
 
-  // Facebook's "More" menu for a message (remove, forward, pin, report…), read without showing it.
-  const readMoreItems = (message) => quietly(async () => {
-    const button = await actionButton(message, MORE_BUTTON);
+  // A menu item's title: its first text ("Unmute notifications" also says "Off until 4:35 AM").
+  const itemLabel = (item) => (item.querySelector('span[dir="auto"]') || item).textContent.trim();
+
+  // Facebook's popup menus (a message's "More", a chat's "…"), read and used without showing them.
+  // `findButton` returns the button that opens the menu (or a promise of it).
+  const readMenuItems = (findButton) => quietly(async () => {
+    const button = await findButton();
     const menu = button && await openMenu(button);
     if (!menu) return [];
     await waitFor(() => menu.querySelector('[role="menuitem"]'), 400);
-    const labels = [...menu.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent.trim()).filter(Boolean);
+    const labels = [...menu.querySelectorAll('[role="menuitem"]')].map(itemLabel).filter(Boolean);
     closeMenus();
     await waitFor(() => !menu.isConnected, 300);
     return labels;
   });
 
-  // "More" items the menu leaves out, and the ones that ask for confirmation (answered natively).
+  // Items the menus leave out, and the ones that open a popup (asked natively, see askDialog).
   const HIDDEN_MORE = /^(report|teata)/i;
-  const REMOVE_ITEM = /^(unsend|remove|delete|eemalda|kustuta)/i;
+  const HIDDEN_CHAT_ITEMS = /^(report|teata|view profile|vaata profiili)/i;
+  const DIALOG_ITEM = /^(unsend|remove|delete|leave|mute|block|eemalda|kustuta|lahku|vaigista|blokeeri)/i;
 
-  const clickMoreItem = (message, label) => quietly(async () => {
-    const button = await actionButton(message, MORE_BUTTON);
+  // `beforeClick` runs just before the item is pressed (with the menu already open).
+  const clickMenuItem = (findButton, label, beforeClick) => quietly(async () => {
+    const button = await findButton();
     const menu = button && await openMenu(button);
-    const item = menu && await waitFor(() => [...menu.querySelectorAll('[role="menuitem"]')].find((i) => i.textContent.trim() === label), 400);
-    if (item) item.click();
-    else if (menu) closeMenus();
+    const item = menu && await waitFor(() => [...menu.querySelectorAll('[role="menuitem"]')].find((i) => itemLabel(i) === label), 400);
+    if (item) {
+      beforeClick?.();
+      item.click();
+    } else if (menu) {
+      closeMenus();
+    }
   });
 
-  const chooseMore = (message, label) => (REMOVE_ITEM.test(label) ? confirmRemoval(message, label) : clickMoreItem(message, label));
+  // `titled`: whether the native alert shows the popup's title (unsend asks with its buttons alone).
+  const chooseMenuItem = (findButton, label, titled = true) => (DIALOG_ITEM.test(label)
+    ? askDialog(findButton, label, titled) : clickMenuItem(findButton, label));
+  const moreButton = (message) => () => actionButton(message, MORE_BUTTON);
 
-  // Unsend / remove: Facebook's confirmation dialog is kept hidden (see hideDialogIn) and the app
-  // shows a native alert with the same choices, then answers Facebook's dialog.
+  // ---- Facebook's popups as native alerts ----------------------------------------------
+  // Menu items that open a Facebook popup (unsend, delete, leave, mute, block…): the popup is kept
+  // hidden (see hideDialogIn) and the app asks the same thing with a native alert (showConfirmation
+  // in main.swift), then answers the popup. A popup with a second step (block, then confirm) is
+  // asked again for that step. Anything the app can't read falls back to Facebook's own popup.
+
   let hideNextDialog = false;
   let hiddenDialog = null;
-  let pendingConfirm = null;
 
   const hideDialogIn = (node) => {
     const dialog = node.matches('[role="dialog"]') ? node : node.querySelector('[role="dialog"]');
@@ -310,62 +627,109 @@
     hideNextDialog = false;
   };
 
-  const confirmRemoval = async (message, label) => {
+  // Runs `open` and returns the popup layer it opened, hidden; null if none appeared. `open` calls
+  // the function it gets right before the step that opens the popup: Facebook's menus sit in a
+  // popup layer too, and one opened on the way must not be taken for it.
+  const openHidden = async (open, timeout) => {
     hiddenDialog = null;
-    hideNextDialog = true;
-    await clickMoreItem(message, label);
-    const hidden = await waitFor(() => hiddenDialog, 1500);
+    await open(() => { hideNextDialog = true; });
+    const hidden = await waitFor(() => hiddenDialog, timeout);
     hideNextDialog = false;
-    if (!hidden) return;
-
-    // Facebook first shows a "Loading…" dialog; wait for the real one (its choices or its button).
-    const textOf = (b) => (b.getAttribute('aria-label') || b.textContent).trim();
-    const isReady = (d) => d.querySelector('input[type="radio"]')
-      || [...d.querySelectorAll('[role="button"], button')].some((b) => REMOVE_ITEM.test(textOf(b)));
-    const dialog = await waitFor(() => [...hidden.layer.querySelectorAll('[role="dialog"]')].find(isReady), 4000);
-    if (!dialog) return hidden.restore(); // fall back to Facebook's own dialog
-
-    const leafTexts = (el) => [...el.querySelectorAll('span')]
-      .filter((s) => !s.childElementCount && s.textContent.trim()).map((s) => s.textContent.trim());
-    const buttons = [...dialog.querySelectorAll('[role="button"], button')];
-    const cancel = buttons.find((b) => /^(cancel|tühista)$/i.test(textOf(b)));
-    const close = buttons.find((b) => /^(close|sulge)$/i.test(textOf(b)));
-    const confirm = buttons.find((b) => b !== cancel && b !== close && REMOVE_ITEM.test(textOf(b)));
-    const radios = [...dialog.querySelectorAll('input[type="radio"]')];
-    // Each choice's row: the radio's largest ancestor without the other choices in it.
-    // Its texts are a title, then an explanation.
-    const options = radios.map((radio) => {
-      let row = radio;
-      while (row.parentElement && row.parentElement !== dialog
-        && row.parentElement.querySelectorAll('input[type="radio"]').length === 1) row = row.parentElement;
-      const [title = '', ...rest] = leafTexts(row);
-      return { title, detail: rest.join(' ') };
-    });
-    const title = dialog.getAttribute('aria-label') || leafTexts(dialog)[0] || label;
-    const buttonTexts = [cancel, close, confirm].filter(Boolean).map(textOf);
-    const detail = options.length ? '' : leafTexts(dialog).filter((t) => t !== title && !buttonTexts.includes(t)).join('\n');
-
-    pendingConfirm = { ...hidden, dialog, radios, confirm, dismiss: cancel || close };
-    native({
-      type: 'confirm', title, detail, options,
-      confirm: confirm ? textOf(confirm) : label, cancel: cancel ? textOf(cancel) : 'Cancel',
-    });
+    return hidden;
   };
 
-  // The native alert's answer: which choice (0, 1…), or -1 for Cancel.
-  const answerConfirm = async (choice) => {
-    const pending = pendingConfirm;
-    pendingConfirm = null;
-    if (!pending) return;
-    if (choice >= 0 && pending.confirm) {
-      pending.radios[choice]?.click();
-      await sleep(80);
-      pending.confirm.click();
+  const DISMISS = /^(cancel|close|tühista|sulge)$/i;
+  const DESTRUCTIVE = /^(unsend|remove|delete|leave|block|eemalda|kustuta|lahku|blokeeri)/i;
+  const leafTexts = (el) => [...el.querySelectorAll('span')]
+    .filter((s) => !s.childElementCount && s.textContent.trim()).map((s) => s.textContent.trim());
+  const buttonLabel = (b) => (b.getAttribute('aria-label') || leafTexts(b)[0] || b.textContent).trim();
+
+  // What a popup asks: a title, its choices (a list to pick from and a confirm button, or buttons),
+  // and how to dismiss it. Null while it isn't ready (Facebook first shows "Loading…").
+  const readDialog = (dialog) => {
+    // Facebook also keeps hidden, disabled copies of some buttons (for another layout).
+    const buttons = [...dialog.querySelectorAll('[role="button"], button')]
+      .filter((b) => b.getAttribute('aria-disabled') !== 'true' && getComputedStyle(b).visibility !== 'hidden');
+    const dismiss = buttons.find((b) => /^(cancel|tühista)$/i.test(buttonLabel(b)))
+      || buttons.find((b) => /^(close|sulge)$/i.test(buttonLabel(b)));
+    const radios = [...dialog.querySelectorAll('input[type="radio"]')];
+    // One choice per label.
+    const seen = new Set();
+    const actions = buttons.filter((b) => {
+      const label = buttonLabel(b);
+      if (!label || DISMISS.test(label) || /^learn more/i.test(label) || seen.has(label)) return false;
+      if (radios.some((radio) => b.contains(radio))) return false;
+      seen.add(label);
+      return true;
+    });
+    let choices;
+    if (radios.length) {
+      const confirm = actions[0];
+      if (!confirm) return null;
+      choices = radios.map((radio) => {
+        // Its row: the radio's largest ancestor without the other choices in it; the first text is its title.
+        let row = radio;
+        while (row.parentElement && row.parentElement !== dialog
+          && row.parentElement.querySelectorAll('input[type="radio"]').length === 1) row = row.parentElement;
+        return {
+          title: leafTexts(row)[0] || '',
+          pick: async () => { radio.click(); await sleep(80); confirm.click(); },
+        };
+      });
     } else {
-      pending.dismiss?.click();
+      choices = actions.map((b) => ({ title: buttonLabel(b), pick: () => b.click() }));
     }
-    await waitFor(() => !pending.dialog.isConnected, 1500);
-    pending.restore();
+    if (!choices.length) return null;
+    return { dialog, title: dialog.getAttribute('aria-label') || leafTexts(dialog)[0] || '', choices, dismiss };
+  };
+
+  // The native alert's answer arrives through answerConfirm: the choice (0, 1…), or -1 for Cancel.
+  let answerAlert = null;
+  const askNatively = (step, titled) => new Promise((resolve) => {
+    answerAlert = resolve;
+    native({
+      type: 'confirm',
+      title: titled ? step.title : '',
+      options: step.choices.map((choice) => ({ title: choice.title, destructive: DESTRUCTIVE.test(choice.title) })),
+      cancel: step.dismiss && /^(cancel|tühista)$/i.test(buttonLabel(step.dismiss)) ? buttonLabel(step.dismiss) : 'Cancel',
+    });
+  });
+  const answerConfirm = (choice) => {
+    const resolve = answerAlert;
+    answerAlert = null;
+    resolve?.(choice);
+  };
+
+  const askDialog = async (findButton, label, titled) => {
+    const first = await openHidden((watch) => clickMenuItem(findButton, label, watch), 1500);
+    if (!first) return;
+    const layers = [first];
+    const signature = (step) => [step.title, ...step.choices.map((choice) => choice.title)].join('\n');
+    let previous = '';
+    try {
+      for (let steps = 0; steps < 4; steps++) {
+        const step = await waitFor(() => {
+          for (const { layer } of layers) {
+            const dialog = [...layer.querySelectorAll('[role="dialog"]')].pop();
+            const read = dialog && readDialog(dialog);
+            if (read && signature(read) !== previous) return read;
+          }
+          return null;
+        }, steps ? 1500 : 4000);
+        if (!step) return; // done (closed), or nothing the app can read
+        previous = signature(step);
+        const choice = await askNatively(step, titled);
+        if (!(choice >= 0 && step.choices[choice])) {
+          step.dismiss?.click();
+          return;
+        }
+        const next = await openHidden((watch) => { watch(); return step.choices[choice].pick(); }, 600); // a next step in a new popup
+        if (next) layers.push(next);
+      }
+    } finally {
+      await waitFor(() => layers.every(({ layer }) => !layer.querySelector('[role="dialog"]')), 1500);
+      for (const { restore } of layers) restore();
+    }
   };
 
   const replyTo = async (message) => (await actionButton(message, REPLY_BUTTON))?.click();
@@ -406,11 +770,10 @@
 
   // Facebook's full emoji picker ("Show more emojis" in the reaction bar), kept hidden (see hideDialogIn).
   const openPicker = async (bar) => {
-    hiddenDialog = null;
-    hideNextDialog = true;
-    [...bar.querySelectorAll('[role="button"]')].pop()?.click();
-    const hidden = await waitFor(() => hiddenDialog, 1500);
-    hideNextDialog = false;
+    const hidden = await openHidden((watch) => {
+      watch();
+      [...bar.querySelectorAll('[role="button"]')].pop()?.click();
+    }, 1500);
     if (!hidden) return null;
     const close = async () => {
       if (hidden.layer.querySelector('[role="dialog"]')) closeMenus();
@@ -529,7 +892,7 @@
     const buttons = (await waitFor(() => actionButtons(message).length && actionButtons(message), 400)) || [];
     const has = (pattern) => buttons.some((b) => pattern.test(b.getAttribute('aria-label')));
     if (has(REACT_BUTTON) && reactionsStale) await withReactionBar(message, () => false);
-    const more = has(MORE_BUTTON) ? (await readMoreItems(message)).filter((label) => !HIDDEN_MORE.test(label)) : [];
+    const more = has(MORE_BUTTON) ? (await readMenuItems(moreButton(message))).filter((label) => !HIDDEN_MORE.test(label)) : [];
     if (id !== menuId) return; // right-clicked something else meanwhile
     native({
       type: 'messageMenu', id, reply: has(REPLY_BUTTON),
@@ -543,7 +906,7 @@
     if (action === 'reply') replyTo(message);
     else if (action === 'react') react(message, value);
     else if (action === 'emoji-catalog') readEmojiCatalog(message);
-    else if (action === 'more') chooseMore(message, value);
+    else if (action === 'more') chooseMenuItem(moreButton(message), value, false);
   };
 
   // ---- Apple emoji, and no time tooltip ---------------------------------------------------
@@ -821,6 +1184,12 @@
       if (event.button === 2) selectedBeforeRightClick = String(getSelection()).trim() !== '';
     }, true);
     window.addEventListener('contextmenu', (event) => {
+      const chat = event.target.closest?.(`.mdesk-pin, ${LIST} [role="row"]`);
+      if (chat) {
+        event.preventDefault();
+        event.stopPropagation();
+        return openChatMenu(chat);
+      }
       const message = event.target.closest?.('[role="main"] [role="log"] [role="article"]');
       if (!message?.querySelector('[data-message-id]')) return;
       // Selected text, links and photos keep the normal menu (Copy, Open Link, Copy Image…).
@@ -967,15 +1336,15 @@
   const norm = (href) => new URL(href, location.href).pathname.replace(/\/+$/, '');
 
   window.__mdesk = {
-    // Conversation rows in the sidebar, in on-screen order.
+    // Pinned chats, then the conversation rows in the sidebar, in on-screen order.
     chats() {
       const seen = new Set();
       const out = [];
-      for (const a of document.querySelectorAll('a[href*="/t/"]')) {
+      for (const a of document.querySelectorAll('.mdesk-pin, a[href*="/t/"]')) {
         if (a.closest('[role="main"], [role="banner"]')) continue; // thread contents, hidden top bar
         const r = a.getBoundingClientRect();
         if (!r.width || !r.height) continue;
-        const path = norm(a.href);
+        const path = a.dataset.path || norm(a.href);
         if (seen.has(path)) continue;
         seen.add(path);
         out.push(a);
@@ -992,7 +1361,7 @@
       const list = this.chats();
       if (!list.length) return;
       const current = norm(location.href);
-      let i = list.findIndex((a) => norm(a.href) === current);
+      let i = list.findIndex((a) => (a.dataset.path || norm(a.href)) === current);
       i = i < 0 ? 0 : (i + delta + list.length) % list.length;
       list[i].click();
     },
@@ -1021,5 +1390,6 @@
     swipe,
     messageAction,
     answerConfirm,
+    chatAction,
   };
 })();
