@@ -39,7 +39,7 @@ All of these are on by default and apply instantly:
 - **Hide filter row:** removes the All / Unread / Groups buttons.
 - **Hide "Reply?" nudges:** removes Meta's "Reply?" / "Follow up?" prompts in the chat list.
 - **Keep info panel closed:** closes the right-hand panel when you switch chats. The ⓘ button still opens it.
-- Notifications, sound, message previews and Open at Login.
+- Notifications, sound (pick any Mac alert sound; choosing one plays it), message previews and Open at Login.
 
 ## Pinned chats
 
@@ -52,6 +52,7 @@ Right-click a chat in the sidebar for a native menu: Pin, Mark as unread, Mute, 
 - **Unsend / remove** asks with a native macOS alert instead of Facebook's popup. Any Facebook popup the app can't turn into an alert still shows as Facebook's own.
 - **Message box:** floats over the chat as a frosted bar, and messages scroll underneath it. Facebook's attach, sticker, GIF and voice buttons are one **⊕** that opens a native menu: Photos & Files, Stickers, GIFs, Voice Message.
 - **Replying** shows a quote card above the message box, like Messages. It slides in and out, and clicking it scrolls to the original message and makes it pulse.
+- **Right-click a chat's background** (anywhere but a message) to customize it: a wallpaper (your own image or a color) and a bubble color for that chat, or a wallpaper for all chats. The message bar's glass blurs the wallpaper behind it.
 - **Esc** leaves reply mode.
 - **SF Symbols** instead of Facebook's icons for the call, video and info buttons and around the message box. They're gray like the Messages toolbar; send and like use the accent color.
 - **Apple emoji** instead of Facebook's in messages, the message box, the chat list, reactions and the emoji picker.
@@ -87,6 +88,7 @@ Swiping no longer goes back or forward between pages.
 - `Sources/DockBadge.swift`: draws the unread count on the Dock icon
 - `Sources/MessageMenu.swift`: the right-click menu for messages
 - `Sources/ReactionCustomizer.swift`: the Customize Reactions sheet
+- `Sources/ChatLooks.swift`: wallpapers and bubble colors per chat, and their right-click menu
 - `Sources/PageSymbols.swift`: draws the SF Symbols the page uses in place of Facebook's icons
 - `Sources/bridge.js`: injected into the page. It hides the rest of Facebook, holds the CSS for each look option, routes web notifications to macOS and powers the chat shortcuts
 - `Tools/make-icon.swift`: draws the app icon

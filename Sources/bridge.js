@@ -63,6 +63,18 @@
       background-image: none !important;
     }
 
+    /* Chat looks (applyLooks): a wallpaper behind the messages shows through Facebook's message rows,
+       and bubbles are filled solid (Facebook's bubble backdrop would cover it), in the chat's bubble color */
+    ${M} [data-mdesk-wallpaper] [role="log"], ${M} [data-mdesk-wallpaper] [role="log"] * {
+      --mwp-message-row-background: transparent !important;
+    }
+    ${M} [role="main"] :is([data-mdesk-wallpaper], [data-mdesk-bubble]) [style*="--chat-outgoing-message-background-gradient"] {
+      --chat-outgoing-message-bubble-background-color: var(--mdesk-bubble, var(--mdesk-accent, var(--accent))) !important;
+    }
+    ${M} [role="main"] :is([data-mdesk-wallpaper], [data-mdesk-bubble]) [style*="--chat-outgoing-message-background-gradient"][style*="background-image"] {
+      background-image: none !important;
+    }
+
     /* Compact chat list */
     ${M}[data-mdesk-compact] ${LIST} [role="grid"] { zoom: 0.85; }
 
@@ -177,13 +189,19 @@
       content: ''; position: absolute; left: 8px; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--accent);
     }
     ${M} [data-mdesk-composer="reply"] h3, ${M} [data-mdesk-composer="reply"] h3 * {
-      color: var(--mdesk-accent-light, var(--accent)) !important; font-size: 12px !important; font-weight: 600 !important;
+      color: var(--primary-text) !important; font-size: 12px !important; font-weight: 600 !important;
     }
     ${M} [data-mdesk-composer="reply"] [role="button"] {
       width: 20px !important; height: 20px !important; border-radius: 50%; display: grid !important; place-items: center;
       background: color-mix(in srgb, var(--primary-text) 14%, transparent);
     }
     ${M} [data-mdesk-composer="reply"] [role="button"] svg { width: 8px !important; height: 8px !important; }
+    ${M} [data-mdesk-composer="reply"][data-mdesk-picture] > div { display: flex !important; align-items: center; }
+    ${M} [data-mdesk-composer="reply"][data-mdesk-picture] > div > div:first-of-type { flex: 1; min-width: 0; }
+    ${M} .mdesk-reply-picture {
+      flex: none; width: 40px; height: 40px; margin-right: 10px; border-radius: 8px; object-fit: cover;
+    }
+    ${M} [data-mdesk-picture] [data-mdesk-composer="reply-caption"] { display: none !important; }
     @keyframes mdesk-reply-in { from { opacity: 0; transform: translateY(10px); } }
     @keyframes mdesk-flash {
       40% { transform: scale(1.04); filter: brightness(1.45); }
@@ -813,7 +831,39 @@
   let replyTarget = null; // the message being replied to, for jumping to it from the reply card
   const replyTo = async (message) => {
     replyTarget = message;
-    (await actionButton(message, REPLY_BUTTON))?.click();
+    hover(message);
+    const buttons = (await waitFor(() => actionButtons(message).length && actionButtons(message), 500)) || [];
+    const reply = buttons.find((b) => REPLY_BUTTON.test(b.getAttribute('aria-label')));
+    if (reply) return reply.click();
+    // Photos and videos have Forward in Reply's place; their Reply is in the "More" menu.
+    const more = buttons.find((b) => MORE_BUTTON.test(b.getAttribute('aria-label')));
+    await quietly(async () => {
+      const menu = more && await openMenu(more);
+      const item = menu && await waitFor(() => [...menu.querySelectorAll('[role="menuitem"]')]
+        .find((i) => REPLY_BUTTON.test(itemLabel(i))), 400);
+      if (item) item.click();
+      else if (menu) closeMenus();
+    });
+  };
+
+  // A photo, video or sticker being replied to shows as a small picture in the reply card instead of
+  // Facebook's "Photo" / "Image".
+  const replyPicture = (message) => [...message.querySelectorAll('[data-message-id] :is(img, video)')]
+    .map((el) => [el, el.getBoundingClientRect()])
+    .filter(([el, r]) => r.width >= 48 && r.height >= 48 && !(el.currentSrc || el.src || '').startsWith('data:'))
+    .sort(([, a], [, b]) => b.width * b.height - a.width * a.height)
+    .map(([el]) => (el.tagName === 'VIDEO' ? el.poster : el.currentSrc || el.src))
+    .find(Boolean);
+
+  const addReplyPicture = (card) => {
+    const src = replyTarget?.isConnected && replyPicture(replyTarget);
+    const title = card.querySelector('h3');
+    if (!src || !title) return;
+    const picture = Object.assign(document.createElement('img'), { className: 'mdesk-reply-picture', src });
+    card.firstElementChild.prepend(picture);
+    card.toggleAttribute('data-mdesk-picture', true);
+    const caption = title.parentElement?.nextElementSibling; // the "Photo" line under "Replying to…"
+    if (caption) caption.dataset.mdeskComposer = 'reply-caption';
   };
 
   // Quick reactions: the user's own set from Facebook's reaction bar, remembered between menus.
@@ -1027,6 +1077,64 @@
   };
 
   // Runs right after every DOM change, before the page is drawn, so nothing flashes.
+  // ---- Chat looks: wallpaper and bubble color --------------------------------------------
+  // Set by right-clicking a chat's background (ChatLooks.swift); a chat's own choice wins over the
+  // one for all chats ("default"). Wallpaper images come from the app when first shown.
+
+  let looks = window.__mdeskLooks || {};
+  const wallpaperImages = new Map(); // file name → data URL (null while being fetched)
+
+  const applyLooks = () => {
+    const column = document.querySelector('[data-mdesk-composer="column"]');
+    if (!column) return;
+    const path = norm(location.href);
+    const look = { ...looks.default, ...looks[path] };
+    let background = '';
+    if (look.wallpaper?.startsWith('color:')) background = look.wallpaper.slice(6);
+    if (look.wallpaper?.startsWith('image:')) {
+      const file = look.wallpaper.slice(6);
+      if (wallpaperImages.get(file)) background = `center / cover no-repeat url("${wallpaperImages.get(file)}")`;
+      else if (!wallpaperImages.has(file)) {
+        wallpaperImages.set(file, null);
+        native({ type: 'wallpaper', file });
+      }
+    }
+    const state = `${path} ${look.wallpaper || ''} ${!!background} ${look.bubble || ''}`;
+    if (column.dataset.mdeskLook === state) return;
+    column.dataset.mdeskLook = state;
+    column.style.background = background;
+    column.toggleAttribute('data-mdesk-wallpaper', !!background);
+    column.toggleAttribute('data-mdesk-bubble', !!look.bubble);
+    if (look.bubble) column.style.setProperty('--mdesk-bubble', look.bubble);
+    else column.style.removeProperty('--mdesk-bubble');
+  };
+
+  const setLooks = (next) => {
+    looks = next || {};
+    applyLooks();
+  };
+  const setWallpaperImage = (file, url) => {
+    wallpaperImages.set(file, url);
+    applyLooks();
+  };
+
+  // Whether a right-click hit a message itself (bubble, photo, sticker, text, reaction) rather than
+  // the empty rest of its row, which spans the chat's whole width in Facebook's own row color.
+  const onMessageContent = (target, row) => {
+    const width = row.getBoundingClientRect().width;
+    const clear = (bg) => bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent';
+    const rowColor = [...row.querySelectorAll('div')]
+      .filter((el) => el.getBoundingClientRect().width > width * 0.85)
+      .map((el) => getComputedStyle(el).backgroundColor).find((bg) => !clear(bg));
+    for (let el = target; el && el !== row; el = el.parentElement) {
+      if (el.getBoundingClientRect().width > width * 0.85) continue;
+      if (/^(img|video|svg|canvas)$/i.test(el.tagName) || el.matches('[dir="auto"], [role="img"]')) return true;
+      const bg = getComputedStyle(el).backgroundColor;
+      if (!clear(bg) && bg !== rowColor) return true;
+    }
+    return false;
+  };
+
   // ---- The message box: floating bar, reply card, ⊕ menu ----------------------------------
   // Tagged on every page change (not later, like markParts), so a chat never shows the old layout.
 
@@ -1060,7 +1168,9 @@
       const tools = [...composer.children].find((child) => child.tagName === 'DIV' && !child.contains(box));
       if (tools && !tools.dataset.mdeskComposer) tools.dataset.mdeskComposer = 'tools';
       for (const child of dock.children) {
-        if (child !== composer && !child.dataset.mdeskComposer) child.dataset.mdeskComposer = 'reply';
+        if (child === composer || child.dataset.mdeskComposer) continue;
+        child.dataset.mdeskComposer = 'reply';
+        addReplyPicture(child);
       }
       const column = dock.parentElement;
       if (!column.querySelector('[data-mdesk-composer="scroller"]')) {
@@ -1126,6 +1236,7 @@
 
   const onDomChange = (records) => {
     markComposer();
+    applyLooks();
     for (const record of records) {
       const target = record.target;
       if (record.type === 'attributes') {
@@ -1371,8 +1482,18 @@
         event.stopPropagation();
         return openChatMenu(chat);
       }
-      const message = event.target.closest?.('[role="main"] [role="log"] [role="article"]');
-      if (!message?.querySelector('[data-message-id]')) return;
+      const row = event.target.closest?.('[role="main"] [role="log"] [role="article"]');
+      const message = row?.querySelector('[data-message-id]') && onMessageContent(event.target, row) ? row : null;
+      if (!message) {
+        // The chat's background: wallpaper and bubble color (showLookMenu in main.swift).
+        const background = event.target.closest?.('[data-mdesk-composer="column"]')
+          && !event.target.closest('[data-mdesk-composer="dock"], a[href], input, [contenteditable="true"]');
+        if (!background || selectedBeforeRightClick) return;
+        event.preventDefault();
+        event.stopPropagation();
+        native({ type: 'lookMenu', path: norm(location.href) });
+        return;
+      }
       // Selected text, links and photos keep the normal menu (Copy, Open Link, Copy Image…).
       const photo = event.target.tagName === 'IMG' && !event.target.src.startsWith('data:');
       if (selectedBeforeRightClick || event.target.closest('a[href]') || photo) return;
@@ -1586,5 +1707,7 @@
     answerConfirm,
     chatAction,
     composerAction,
+    setLooks,
+    setWallpaperImage,
   };
 })();
