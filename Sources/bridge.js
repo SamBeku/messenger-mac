@@ -685,13 +685,22 @@
     const top = Math.max(r.top, box.top);
     Object.assign(cover.style, { left: `${box.left}px`, top: `${top}px`, height: `${Math.min(r.bottom, box.bottom) - top}px` });
     const icon = add(fading, 'mdesk-reply');
+    // Line up with what the message shows (text, photo, sticker, video, big emoji), not the row,
+    // which also holds reactions and reply quotes. The lowest one on screen is the message itself
+    // ("X replied to Y" and the quote sit above it, in any page order). Skipped: empty elements,
+    // avatars (28px) and reaction emoji (16px).
+    const bubble = [...message.querySelectorAll('[data-message-id] :is([dir="auto"], img, video, [role="img"])')]
+      .map((el) => [el, el.getBoundingClientRect()])
+      .filter(([el, b]) => b.width > 0 && b.height > 0 && (el.matches('[dir="auto"]') || (b.width >= 32 && b.height >= 32)))
+      .map(([, b]) => b)
+      .reduce((lowest, b) => (!lowest || b.bottom > lowest.bottom ? b : lowest), null) || r;
     const svg = icon.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'svg'));
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.appendChild(document.createElementNS(svg.namespaceURI, 'path'))
       .setAttribute('d', 'M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z');
     Object.assign(icon.style, {
       left: `${box.left + 14}px`,
-      top: `${Math.min(Math.max(r.top + r.height / 2, box.top + 20), box.bottom - 20)}px`,
+      top: `${Math.min(Math.max(bubble.top + bubble.height / 2, box.top + 20), box.bottom - 20)}px`,
     });
 
     let armed = false;
