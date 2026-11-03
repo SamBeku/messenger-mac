@@ -247,7 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let settings = appliedAppearance?.pageSettingsJSON ?? "{}"
         let pins = defaults.string(forKey: Pref.pinnedChats) ?? "[]"
         controller.removeAllUserScripts()
-        for source in ["window.__mdeskSettings = \(settings); window.__mdeskPins = \(pins);", bridgeSource] {
+        for source in ["window.__mdeskSettings = \(settings); window.__mdeskPins = \(pins); window.__mdeskSymbols = \(PageSymbols.json);", bridgeSource] {
             controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
     }

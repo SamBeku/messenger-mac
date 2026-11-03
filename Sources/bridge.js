@@ -155,6 +155,35 @@
     .mdesk-reply svg { width: 18px; height: 18px; fill: currentColor; }
     .mdesk-reply.mdesk-armed { background: var(--accent); color: #fff; }
   `;
+  // Facebook's icons in the chat header and next to the message box, swapped for SF Symbols drawn
+  // by the app (PageSymbols.swift): gray like Messages' toolbar, the accent color for send and like.
+  const ICONS = [
+    ['Start a voice call', 'phone.fill'],
+    ['Start a video call', 'video.fill'],
+    ['Conversation information', 'info.circle'],
+    ['Open more actions', 'plus.circle.fill', 22],
+    ['Send a voice clip', 'mic.fill'],
+    ['Attach a file', 'photo.on.rectangle'],
+    ['Choose a sticker', 'face.smiling.inverse'],
+    ['Choose a GIF', 'play.square.stack'],
+    ['Choose an emoji', 'face.smiling'],
+    ['Send a like', 'hand.thumbsup.fill', 20, true],
+    ['Press enter to send', 'arrow.up.circle.fill', 26, true],
+  ];
+  const iconStyles = () => ICONS.map(([label, symbol, size = 20, accent = false]) => {
+    const url = window.__mdeskSymbols?.[symbol];
+    if (!url) return '';
+    const button = `${M} [role="main"] [role="button"][aria-label^="${label}"]`;
+    return `
+      ${button} { position: relative; }
+      ${button} svg { visibility: hidden !important; }
+      ${button}::after {
+        content: ''; position: absolute; inset: 0; margin: auto; width: ${size}px; height: ${size}px; pointer-events: none;
+        background-color: ${accent ? 'var(--accent)' : 'var(--secondary-icon)'};
+        -webkit-mask: url("${url}") center / contain no-repeat;
+      }`;
+  }).join('');
+
   const messageList = () => document.querySelector('[role="main"] [role="log"]');
 
   // ---- Tagging parts of the page ------------------------------------------------
@@ -1154,7 +1183,7 @@
 
   if (onFacebook) {
     const style = document.createElement('style');
-    style.textContent = STYLES;
+    style.textContent = STYLES + iconStyles();
     root.append(style, accentStyle);
 
     const syncPage = () => {
@@ -1345,7 +1374,7 @@
         const r = a.getBoundingClientRect();
         if (!r.width || !r.height) continue;
         const path = a.dataset.path || norm(a.href);
-        if (seen.has(path)) continue;
+        if (!/\/t\/[^/]+$/.test(path) || seen.has(path)) continue; // a chat, not the "Chats" link (/messages/t)
         seen.add(path);
         out.push(a);
       }

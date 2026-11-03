@@ -51,6 +51,7 @@ Right-click a chat in the sidebar for a native menu: Pin, Mark as unread, Mute, 
 - **Quick reactions:** 5 by default and up to 10, shown 5 per line. **+** opens Customize Reactions, where you can search and pick from all of Facebook's emoji. The list is kept by the app (Facebook itself only allows 6). Reactions outside Facebook's own six are sent through Facebook's full emoji picker behind the scenes.
 - **Unsend / remove** asks with a native macOS alert instead of Facebook's popup. Any Facebook popup the app can't turn into an alert still shows as Facebook's own.
 - **Esc** leaves reply mode.
+- **SF Symbols** instead of Facebook's icons for the call, video and info buttons and around the message box. They're gray like the Messages toolbar; send and like use the accent color.
 - **Apple emoji** instead of Facebook's in messages, the message box, the chat list, reactions and the emoji picker.
 
 ## Trackpad gestures (in a chat)
@@ -84,6 +85,7 @@ Swiping no longer goes back or forward between pages.
 - `Sources/DockBadge.swift`: draws the unread count on the Dock icon
 - `Sources/MessageMenu.swift`: the right-click menu for messages
 - `Sources/ReactionCustomizer.swift`: the Customize Reactions sheet
+- `Sources/PageSymbols.swift`: draws the SF Symbols the page uses in place of Facebook's icons
 - `Sources/bridge.js`: injected into the page. It hides the rest of Facebook, holds the CSS for each look option, routes web notifications to macOS and powers the chat shortcuts
 - `Tools/make-icon.swift`: draws the app icon
 - `Info.plist`: bundle settings and camera/microphone permission text
