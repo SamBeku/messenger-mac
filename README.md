@@ -54,6 +54,7 @@ Right-click a chat in the sidebar for a native menu: Pin, Mark as unread, Mute, 
 - **Replying** shows a quote card above the message box, like Messages. It slides in and out, and clicking it scrolls to the original message and makes it pulse.
 - **Right-click a chat's background** (anywhere but a message) to customize it: a wallpaper (your own image or a color) and a bubble color for that chat, or a wallpaper for all chats. The message bar's glass blurs the wallpaper behind it.
 - **Esc** leaves reply mode.
+- **Seen time:** when someone has seen your message, the time they saw it shows next to their little avatar, like "Seen 3:01 PM" (Facebook only reveals it on hover). In groups it lists who has seen it.
 - **SF Symbols** instead of Facebook's icons for the call, video and info buttons and around the message box. They're gray like the Messages toolbar; send and like use the accent color.
 - **Apple emoji** instead of Facebook's in messages, the message box, the chat list, reactions and the emoji picker.
 
