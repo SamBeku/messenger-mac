@@ -7,6 +7,7 @@ enum PageSymbols {
     static let names = [
         "phone.fill", "video.fill", "info.circle", "plus.circle.fill", "mic.fill", "photo.on.rectangle",
         "face.smiling.inverse", "play.square.stack", "face.smiling", "hand.thumbsup.fill", "arrow.up.circle.fill",
+        "plus.circle",
     ]
 
     /// {"phone.fill": "data:image/png;base64,…", …} as JSON, for window.__mdeskSymbols.

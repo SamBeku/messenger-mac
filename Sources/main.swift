@@ -370,6 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         case "messageMenu": showMessageMenu(body)
         case "chatMenu": showChatMenu(body)
+        case "composerMenu": showComposerMenu()
         case "pins": savePins(body["pins"])
         case "confirm": showConfirmation(body)
         case "emojiCatalog": receiveEmojiCatalog(body)
@@ -414,6 +415,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         guard !menu.items.isEmpty else { return }
         // At the pointer, like any context menu; shown once this script message has been handled.
+        let point = webView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        DispatchQueue.main.async { [weak self] in
+            guard let webView = self?.webView else { return }
+            menu.popUp(positioning: nil, at: point, in: webView)
+        }
+    }
+
+    /// The ⊕ next to the message box: what Facebook's attach / sticker / GIF / voice buttons do,
+    /// as one native menu. The page presses the matching button (composerAction in bridge.js).
+    private func showComposerMenu() {
+        let menu = NSMenu()
+        let choices = [
+            ("Photos & Files", "photo.on.rectangle", "photos"), ("Stickers", "face.smiling.inverse", "stickers"),
+            ("GIFs", "play.square.stack", "gifs"), ("Voice Message", "mic", "voice"),
+        ]
+        for (title, symbol, action) in choices {
+            menu.addItem(ActionMenuItem(title, symbol: symbol) { [weak self] in
+                self?.webView.callAsyncJavaScript(
+                    "window.__mdesk?.composerAction(action)", arguments: ["action": action],
+                    in: nil, in: .page, completionHandler: nil)
+            })
+        }
         let point = webView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
         DispatchQueue.main.async { [weak self] in
             guard let webView = self?.webView else { return }

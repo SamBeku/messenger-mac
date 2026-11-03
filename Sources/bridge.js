@@ -140,6 +140,55 @@
     /* Facebook menus the app opens behind the scenes for the right-click menu */
     html[data-mdesk-quiet] [role="menu"] { opacity: 0 !important; }
 
+    /* The message box floats over the chat as a frosted bar, and the messages scroll under it. The parts
+       are tagged by markComposer(); --mdesk-dock-height keeps room under the last message. */
+    ${M} [data-mdesk-composer="column"] { position: relative !important; }
+    ${M} [data-mdesk-composer="dock"] {
+      position: absolute !important; left: 12px; right: 12px; bottom: 12px; z-index: 2;
+      border-radius: 22px; overflow: hidden;
+      background: color-mix(in srgb, var(--web-wash) 72%, transparent);
+      -webkit-backdrop-filter: blur(24px) saturate(1.8); backdrop-filter: blur(24px) saturate(1.8);
+      box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--primary-text) 16%, transparent), 0 8px 28px rgba(0, 0, 0, 0.28);
+    }
+    ${M} [data-mdesk-composer="composer"] { padding: 6px 4px !important; }
+    ${M} [data-mdesk-composer="scroller"] > * { padding-bottom: calc(var(--mdesk-dock-height, 0px) + 16px) !important; }
+
+    /* Facebook's attach / sticker / GIF / voice buttons: one ⊕ that opens a native menu instead. They
+       stay in place, invisible, so the app can press them and Facebook's pickers open at the ⊕. */
+    ${M} [data-mdesk-composer="tools"] {
+      position: relative !important; flex: none !important; width: 36px !important; min-width: 36px !important;
+      height: 36px !important; align-self: flex-end; padding: 0 !important; margin-left: 4px !important;
+    }
+    ${M} [data-mdesk-composer="tools"] > * {
+      position: absolute !important; inset: 0; opacity: 0 !important; pointer-events: none !important;
+    }
+    ${M} [data-mdesk-composer="tools"]::after {
+      content: ''; position: absolute; inset: 0; margin: auto; width: 24px; height: 24px;
+      background-color: var(--secondary-icon); -webkit-mask: var(--mdesk-plus) center / contain no-repeat;
+    }
+
+    /* Replying: a card like Messages' quote, sliding in above the message box. Click it to see the message. */
+    ${M} [data-mdesk-composer="reply"] { padding: 8px 8px 0; animation: mdesk-reply-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1); }
+    ${M} [data-mdesk-composer="reply"] > div {
+      position: relative; border: 0 !important; border-radius: 14px; cursor: pointer;
+      padding: 7px 12px 7px 20px !important; background: color-mix(in srgb, var(--primary-text) 8%, transparent);
+    }
+    ${M} [data-mdesk-composer="reply"] > div::before {
+      content: ''; position: absolute; left: 8px; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--accent);
+    }
+    ${M} [data-mdesk-composer="reply"] h3, ${M} [data-mdesk-composer="reply"] h3 * {
+      color: var(--mdesk-accent-light, var(--accent)) !important; font-size: 12px !important; font-weight: 600 !important;
+    }
+    ${M} [data-mdesk-composer="reply"] [role="button"] {
+      width: 20px !important; height: 20px !important; border-radius: 50%; display: grid !important; place-items: center;
+      background: color-mix(in srgb, var(--primary-text) 14%, transparent);
+    }
+    ${M} [data-mdesk-composer="reply"] [role="button"] svg { width: 8px !important; height: 8px !important; }
+    @keyframes mdesk-reply-in { from { opacity: 0; transform: translateY(10px); } }
+    @keyframes mdesk-flash {
+      40% { transform: scale(1.04); filter: brightness(1.45); }
+    }
+
     /* Two-finger swipes: time labels, reply arrow, and the cover for the space messages slide out of */
     .mdesk-layer { position: fixed; inset: 0; z-index: 1000; pointer-events: none; }
     .mdesk-cover { position: absolute; background: var(--messenger-card-background); }
@@ -761,7 +810,11 @@
     }
   };
 
-  const replyTo = async (message) => (await actionButton(message, REPLY_BUTTON))?.click();
+  let replyTarget = null; // the message being replied to, for jumping to it from the reply card
+  const replyTo = async (message) => {
+    replyTarget = message;
+    (await actionButton(message, REPLY_BUTTON))?.click();
+  };
 
   // Quick reactions: the user's own set from Facebook's reaction bar, remembered between menus.
   const withEmojiStyle = (emoji) => (/^[\u{2000}-\u{2BFF}]$/u.test(emoji) ? `${emoji}\u{FE0F}` : emoji); // ❤ → ❤️
@@ -974,7 +1027,105 @@
   };
 
   // Runs right after every DOM change, before the page is drawn, so nothing flashes.
+  // ---- The message box: floating bar, reply card, ⊕ menu ----------------------------------
+  // Tagged on every page change (not later, like markParts), so a chat never shows the old layout.
+
+  let replyCard = null; // { el, rect } while replying, for the card's slide-out once Facebook removes it
+  const dockSize = new ResizeObserver((entries) => {
+    for (const { target: dock } of entries) {
+      const column = dock.parentElement;
+      const scroller = column?.querySelector('[data-mdesk-composer="scroller"]');
+      const before = parseFloat(column?.style.getPropertyValue('--mdesk-dock-height')) || 0;
+      const height = dock.offsetHeight;
+      const atBottom = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+      column?.style.setProperty('--mdesk-dock-height', `${height}px`);
+      // Keep the newest message in view when the bar grows (a reply card) or shrinks.
+      if (atBottom && height !== before) scroller.scrollTop = scroller.scrollHeight;
+      const card = dock.querySelector(':scope > [data-mdesk-composer="reply"]');
+      if (card) replyCard = { el: card, rect: card.getBoundingClientRect() };
+    }
+  });
+
+  const markComposer = () => {
+    const box = document.querySelector('[role="main"] [role="region"] [role="textbox"][contenteditable="true"]');
+    const composer = box?.closest('[role="region"]');
+    const dock = composer?.parentElement;
+    if (dock) {
+      if (!composer.dataset.mdeskComposer) {
+        composer.dataset.mdeskComposer = 'composer';
+        dock.dataset.mdeskComposer = 'dock';
+        dock.parentElement.dataset.mdeskComposer = 'column';
+        dockSize.observe(dock);
+      }
+      const tools = [...composer.children].find((child) => child.tagName === 'DIV' && !child.contains(box));
+      if (tools && !tools.dataset.mdeskComposer) tools.dataset.mdeskComposer = 'tools';
+      for (const child of dock.children) {
+        if (child !== composer && !child.dataset.mdeskComposer) child.dataset.mdeskComposer = 'reply';
+      }
+      const column = dock.parentElement;
+      if (!column.querySelector('[data-mdesk-composer="scroller"]')) {
+        const scroller = [...(messageList()?.querySelectorAll('div') || [])]
+          .find((el) => /(auto|scroll)/.test(getComputedStyle(el).overflowY));
+        if (scroller) scroller.dataset.mdeskComposer = 'scroller';
+      }
+    }
+    // The reply card is gone (sent, Esc, ✕): let a copy of it slide out where it was.
+    if (replyCard && !replyCard.el.isConnected) {
+      const { el, rect } = replyCard;
+      replyCard = null;
+      const ghost = el.cloneNode(true);
+      Object.assign(ghost.style, {
+        position: 'fixed', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`,
+        zIndex: 3, pointerEvents: 'none', animation: 'none',
+      });
+      document.body.appendChild(ghost);
+      ghost.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(10px)' }], { duration: 180, easing: 'ease-in' })
+        .finished.then(() => ghost.remove(), () => ghost.remove());
+    }
+  };
+
+  // Clicking the reply card scrolls to the message being replied to and makes it pulse.
+  const showRepliedMessage = (card) => {
+    let message = replyTarget?.isConnected ? replyTarget : null;
+    if (!message) {
+      // Replying started elsewhere: find it by its text, newest first.
+      const quote = [...card.querySelectorAll('span, div')].filter((el) => !el.childElementCount && el.textContent.trim())
+        .map((el) => el.textContent.trim()).pop();
+      message = [...document.querySelectorAll('[role="main"] [role="log"] [role="article"]')].reverse()
+        .find((article) => quote && article.textContent.includes(quote));
+    }
+    if (!message) return;
+    message.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const bubble = message.querySelector('[data-message-id]') || message;
+    setTimeout(() => bubble.animate([{}, { transform: 'scale(1.04)', filter: 'brightness(1.45)' }, {}],
+      { duration: 650, easing: 'ease-in-out' }), 350);
+  };
+
+  // The ⊕ menu's choices (showComposerMenu in main.swift) press Facebook's buttons. While typing,
+  // Facebook folds them into "Open more actions", a menu, which is opened out of sight for it.
+  const COMPOSER_ACTIONS = {
+    photos: /^attach a file/i, stickers: /^choose a sticker/i, gifs: /^choose a gif/i, voice: /^send a voice clip/i,
+  };
+  const composerButton = (pattern) => [...document.querySelectorAll('[role="main"] [role="button"][aria-label]')]
+    .find((b) => pattern.test(b.getAttribute('aria-label')));
+  const composerAction = async (action) => {
+    const pattern = COMPOSER_ACTIONS[action];
+    if (!pattern) return;
+    const direct = composerButton(pattern);
+    if (direct) return direct.click();
+    const more = composerButton(/^open more actions/i);
+    await quietly(async () => {
+      const menu = more && await openMenu(more);
+      const item = menu && await waitFor(() => [...menu.querySelectorAll('[role="menuitem"][aria-label]')]
+        .find((i) => pattern.test(i.getAttribute('aria-label'))), 600);
+      await sleep(150); // a press right as the menu appears is ignored (GIFs)
+      if (item) item.click();
+      else if (menu) closeMenus();
+    });
+  };
+
   const onDomChange = (records) => {
+    markComposer();
     for (const record of records) {
       const target = record.target;
       if (record.type === 'attributes') {
@@ -1183,7 +1334,8 @@
 
   if (onFacebook) {
     const style = document.createElement('style');
-    style.textContent = STYLES + iconStyles();
+    style.textContent = STYLES + iconStyles()
+      + `html { --mdesk-plus: url("${window.__mdeskSymbols?.['plus.circle'] || ''}"); }`;
     root.append(style, accentStyle);
 
     const syncPage = () => {
@@ -1275,6 +1427,19 @@
     };
     new MutationObserver(reportTheme).observe(root, { attributes: true, attributeFilter: ['class'] });
     reportTheme();
+
+    // The ⊕ next to the message box, and the reply card.
+    window.addEventListener('click', (event) => {
+      // Only real clicks: the app's own presses of Facebook's hidden buttons in there go through.
+      if (event.isTrusted && event.target.closest?.('[data-mdesk-composer="tools"]')) {
+        event.preventDefault();
+        event.stopPropagation();
+        native({ type: 'composerMenu' });
+        return;
+      }
+      const card = event.target.closest?.('[data-mdesk-composer="reply"]');
+      if (card && !event.target.closest('[role="button"]')) showRepliedMessage(card);
+    }, true);
 
     // Links to the rest of Facebook open in the browser.
     window.addEventListener('click', (event) => {
@@ -1420,5 +1585,6 @@
     messageAction,
     answerConfirm,
     chatAction,
+    composerAction,
   };
 })();

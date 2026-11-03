@@ -50,6 +50,8 @@ Right-click a chat in the sidebar for a native menu: Pin, Mark as unread, Mute, 
 - **Right-click a message** for a native menu laid out like Messages: your quick reactions across the top, then Reply, Edit, Forward, Copy, Pin and Unsend. Facebook's hover buttons and the time tooltip on hover are hidden.
 - **Quick reactions:** 5 by default and up to 10, shown 5 per line. **+** opens Customize Reactions, where you can search and pick from all of Facebook's emoji. The list is kept by the app (Facebook itself only allows 6). Reactions outside Facebook's own six are sent through Facebook's full emoji picker behind the scenes.
 - **Unsend / remove** asks with a native macOS alert instead of Facebook's popup. Any Facebook popup the app can't turn into an alert still shows as Facebook's own.
+- **Message box:** floats over the chat as a frosted bar, and messages scroll underneath it. Facebook's attach, sticker, GIF and voice buttons are one **⊕** that opens a native menu: Photos & Files, Stickers, GIFs, Voice Message.
+- **Replying** shows a quote card above the message box, like Messages. It slides in and out, and clicking it scrolls to the original message and makes it pulse.
 - **Esc** leaves reply mode.
 - **SF Symbols** instead of Facebook's icons for the call, video and info buttons and around the message box. They're gray like the Messages toolbar; send and like use the accent color.
 - **Apple emoji** instead of Facebook's in messages, the message box, the chat list, reactions and the emoji picker.
