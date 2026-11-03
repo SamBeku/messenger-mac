@@ -83,6 +83,10 @@ struct ReactionCustomizer: View {
                 }
             }
         }
+        // Selecting, adding, removing and swapping glide instead of jumping.
+        .animation(.snappy(duration: 0.22), value: model.reactions)
+        .animation(.snappy(duration: 0.22), value: selected)
+        .animation(.snappy(duration: 0.22), value: adding)
     }
 
     private func slot(_ index: Int) -> some View {
@@ -201,7 +205,7 @@ struct ReactionCustomizer: View {
                         if query.isEmpty {
                             HStack(spacing: 18) {
                                 ForEach(Array(catalog.enumerated()), id: \.element.id) { index, category in
-                                    Button { proxy.scrollTo(category.name, anchor: .top) } label: {
+                                    Button { withAnimation(.smooth(duration: 0.35)) { proxy.scrollTo(category.name, anchor: .top) } } label: {
                                         Image(systemName: Self.categoryIcons[min(index, Self.categoryIcons.count - 1)])
                                     }
                                     .buttonStyle(.plain)
@@ -243,6 +247,7 @@ private struct EmojiButtonStyle: ButtonStyle {
             configuration.label
                 .background(RoundedRectangle(cornerRadius: 8)
                     .fill(Color.primary.opacity(configuration.isPressed ? 0.18 : hovered ? 0.1 : 0)))
+                .animation(.easeOut(duration: 0.12), value: hovered)
                 .onHover { hovered = $0 }
         }
     }

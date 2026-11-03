@@ -608,7 +608,12 @@
 
   const TIME_WIDTH = 72; // how far messages slide to show their times
   const REPLY_AT = 60; // how far to swipe before letting go replies
-  const rubberBand = (distance, limit) => (distance <= limit ? distance : limit + (distance - limit) * 0.15);
+  // Past the limit the messages resist more and more, without a sudden change in speed.
+  const rubberBand = (distance, limit) => {
+    if (distance <= limit) return distance;
+    const over = distance - limit;
+    return limit + over / (1 + over / (limit * 0.3));
+  };
   let gesture = null;
 
   // A message's label starts with its time: "Kell 23:29, Alex: …" ("At 23:29, …").
@@ -633,23 +638,48 @@
     return { cover, fading, remove: () => layer.remove() };
   };
 
-  // Messages only ever sit at whole pixels: at fractional positions the edges between a row's
+  // Messages only ever sit at whole screen pixels: in between, the edges between a row's
   // pieces blur and let the blue backdrop through as thin vertical lines.
+  const snap = (value) => Math.round(value * devicePixelRatio) / devicePixelRatio;
+
   const slideMessages = (messages, offset) => {
-    for (const message of messages) message.style.transform = offset ? `translateX(${offset}px)` : '';
+    for (const message of messages) {
+      message.style.transform = offset ? `translateX(${offset}px)` : '';
+      message.style.willChange = offset ? 'transform' : ''; // moved by the GPU, no repaint per frame
+    }
   };
 
-  // Eases from `from` back to 0 over 250ms, a whole pixel at a time (CSS transitions would pass
-  // through fractional positions).
-  const settle = (from, apply, done) => {
-    const start = performance.now();
-    const frame = (now) => {
-      const t = Math.min(1, (now - start) / 250);
-      apply(Math.round(from * (1 - t) ** 3));
-      if (t < 1) requestAnimationFrame(frame);
-      else done();
+  // Trackpad events arrive out of step with the screen, so drawing each one directly skips some
+  // frames and doubles up others. Instead `to` only sets where the fingers are, and drawing happens
+  // once per screen frame, easing quickly toward that spot. `release` eases back to 0, then calls done.
+  const follower = (apply) => {
+    let target = 0;
+    let shown = 0;
+    let last = 0;
+    let frame = 0;
+    let finish = null;
+    const tick = (now) => {
+      const elapsed = last ? Math.min(now - last, 50) : 16;
+      last = now;
+      shown += (target - shown) * (1 - Math.exp(-elapsed / (finish ? 60 : 25)));
+      if (Math.abs(target - shown) < 0.25) shown = target;
+      apply(snap(shown));
+      if (shown !== target) {
+        frame = requestAnimationFrame(tick);
+        return;
+      }
+      frame = 0;
+      finish?.();
     };
-    requestAnimationFrame(frame);
+    const run = () => {
+      if (frame) return;
+      last = 0;
+      frame = requestAnimationFrame(tick);
+    };
+    return {
+      to: (value) => { target = value; run(); },
+      release: (done) => { target = 0; finish = done; run(); },
+    };
   };
 
   const showTimes = (list) => {
@@ -668,17 +698,16 @@
       label.textContent = time;
       Object.assign(label.style, { top: `${middle}px`, right: `${innerWidth - box.right + 12}px` });
     }
-    let current = 0;
     const slide = (offset) => {
-      current = offset;
       slideMessages(messages, -offset);
       // 2px of overlap, so no sliver of gradient shows at the cover's edge.
       Object.assign(cover.style, { left: `${box.right - offset - 2}px`, width: `${offset + 2}px` });
       fading.style.opacity = Math.min(1, offset / TIME_WIDTH);
     };
+    const motion = follower(slide);
     return {
-      move: (distance) => slide(Math.round(rubberBand(Math.max(0, -distance), TIME_WIDTH))),
-      end: () => settle(current, slide, () => { remove(); slideMessages(messages, 0); }),
+      move: (distance) => motion.to(rubberBand(Math.max(0, -distance), TIME_WIDTH)),
+      end: () => motion.release(() => { remove(); slideMessages(messages, 0); }),
     };
   };
 
@@ -709,25 +738,28 @@
     });
 
     let armed = false;
-    let current = 0;
     const slide = (offset) => {
-      current = offset;
       slideMessages([message], offset);
       cover.style.width = `${offset + 2}px`;
       const progress = Math.min(1, offset / REPLY_AT);
       fading.style.opacity = progress;
       icon.style.transform = `translateY(-50%) scale(${0.6 + 0.4 * progress})`;
-      if ((offset >= REPLY_AT) !== armed) {
-        armed = !armed;
-        icon.classList.toggle('mdesk-armed', armed);
-        if (armed) native({ type: 'haptic' }); // a click on the trackpad
-      }
+      icon.classList.toggle('mdesk-armed', offset >= REPLY_AT - 0.5);
     };
+    const motion = follower(slide);
     return {
-      move: (distance) => slide(Math.round(rubberBand(Math.max(0, distance), REPLY_AT))),
+      move: (distance) => {
+        const offset = rubberBand(Math.max(0, distance), REPLY_AT);
+        // Armed by where the fingers are, so the trackpad clicks right away.
+        if ((offset >= REPLY_AT) !== armed) {
+          armed = !armed;
+          if (armed) native({ type: 'haptic' }); // a click on the trackpad
+        }
+        motion.to(offset);
+      },
       end: (completed) => {
         const reply = completed && armed;
-        settle(current, slide, () => { remove(); slideMessages([message], 0); });
+        motion.release(() => { remove(); slideMessages([message], 0); });
         if (reply) replyTo(message);
       },
     };
